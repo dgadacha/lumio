@@ -431,14 +431,14 @@ struct PlayerView: View {
                 VStack {
                     Spacer()
                     Text(model.notice ?? model.caption)
-                        .font(.system(size: model.notice == nil ? 26 : 15, weight: .semibold))
+                        .font(.system(size: model.notice == nil ? 24 : 14, weight: .medium))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 6))
                         .shadow(color: .black, radius: 3)
                         .padding(.horizontal, 80)
-                        .padding(.bottom, model.controlsVisible ? 132 : 56)
+                        .padding(.bottom, model.controlsVisible ? 92 : 48)
                 }
                 .allowsHitTesting(false)
             }
@@ -498,58 +498,59 @@ struct PlayerView: View {
 
     private var controls: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                IconButton(symbol: "chevron.left", size: 17) { close() }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(media.video.title).font(.system(size: 17, weight: .bold)).lineLimit(1)
+            HStack(spacing: 10) {
+                playerButton("chevron.left", size: 15) { close() }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(media.video.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     Text(media.detailLine)
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(Theme.dim)
                 }
                 Spacer()
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 40)
-            .padding(.bottom, 50)
-            .background(LinearGradient(colors: [.black.opacity(0.8), .clear], startPoint: .top, endPoint: .bottom))
+            .padding(.horizontal, 18)
+            .padding(.top, 34)
+            .padding(.bottom, 36)
+            .background(LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom))
 
             Spacer().allowsHitTesting(false)
 
-            VStack(spacing: 12) {
-                HStack(spacing: 14) {
-                    Text(Fmt.duration(model.time).isEmpty ? "0:00" : Fmt.duration(model.time))
-                    Scrubber(value: model.time, total: model.duration) { model.seek(to: $0); model.pokeControls() }
-                    Text(Fmt.duration(model.duration))
-                }
-                .font(.system(size: 12.5, weight: .medium).monospacedDigit())
+            VStack(spacing: 4) {
+                Scrubber(value: model.time, total: model.duration) { model.seek(to: $0); model.pokeControls() }
 
-                HStack(spacing: 22) {
-                    playerButton(model.isPlaying ? "pause.fill" : "play.fill", size: 26) { model.togglePlay() }
-                    playerButton("gobackward.10", size: 21) { model.seek(by: -10) }
-                    playerButton("goforward.10", size: 21) { model.seek(by: 10) }
-                    HStack(spacing: 8) {
-                        playerButton(model.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 17) {
-                            model.volume = model.volume == 0 ? 1 : 0
-                        }
-                        Scrubber(value: Double(model.volume), total: 1, height: 4) { model.volume = Float($0) }
-                            .frame(width: 90)
-                    }
+                HStack(spacing: 10) {
+                    playerButton(model.isPlaying ? "pause.fill" : "play.fill", size: 17) { model.togglePlay() }
+                    playerButton("gobackward.10", size: 15) { model.seek(by: -10) }
+                    playerButton("goforward.10", size: 15) { model.seek(by: 10) }
                     if let next = media.nextLocalPath {
-                        playerButton("forward.end.fill", size: 19) { Task { await state.playLocal(path: next) } }
+                        playerButton("forward.end.fill", size: 14) { Task { await state.playLocal(path: next) } }
                             .help("Épisode suivant")
                     }
+                    HStack(spacing: 4) {
+                        playerButton(model.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 13) {
+                            model.volume = model.volume == 0 ? 1 : 0
+                        }
+                        Scrubber(value: Double(model.volume), total: 1, height: 2, tint: .white.opacity(0.75), thumb: 8) { model.volume = Float($0) }
+                            .frame(width: 60)
+                    }
+                    Text("\(Fmt.duration(model.time).isEmpty ? "0:00" : Fmt.duration(model.time)) / \(Fmt.duration(model.duration))")
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.leading, 6)
                     Spacer()
-                    if media.isStream { qualityMenu }
-                    if model.audioChoices.count > 1 { audioMenu }
-                    subtitleMenu
-                    rateMenu
-                    playerButton("arrow.up.left.and.arrow.down.right", size: 17) { model.toggleFullScreen() }
+                    HStack(spacing: 16) {
+                        if media.isStream { qualityMenu }
+                        if model.audioChoices.count > 1 { audioMenu }
+                        subtitleMenu
+                        rateMenu
+                    }
+                    playerButton("arrow.up.left.and.arrow.down.right", size: 13) { model.toggleFullScreen() }
                 }
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 60)
-            .padding(.bottom, 24)
-            .background(LinearGradient(colors: [.clear, .black.opacity(0.88)], startPoint: .top, endPoint: .bottom))
+            .padding(.horizontal, 18)
+            .padding(.top, 40)
+            .padding(.bottom, 12)
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
         }
     }
 
@@ -559,9 +560,9 @@ struct PlayerView: View {
             model.pokeControls()
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
+                .font(.system(size: size, weight: .regular))
+                .foregroundStyle(.white.opacity(0.92))
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -569,8 +570,8 @@ struct PlayerView: View {
 
     private func menuLabel(_ text: String, _ symbol: String, dimmed: Bool = false) -> some View {
         Label(text, systemImage: symbol)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(dimmed ? Theme.faint : .white)
+            .font(.system(size: 11.5, weight: .regular))
+            .foregroundStyle(dimmed ? Theme.faint : Color.white.opacity(0.8))
     }
 
     private var qualityMenu: some View {
@@ -643,7 +644,9 @@ struct PlayerView: View {
 struct Scrubber: View {
     let value: Double
     let total: Double
-    var height: CGFloat = 5
+    var height: CGFloat = 3
+    var tint: Color = Theme.accent
+    var thumb: CGFloat = 10
     let onSeek: (Double) -> Void
     @State private var hover = false
     @State private var dragValue: Double?
@@ -651,16 +654,18 @@ struct Scrubber: View {
     var body: some View {
         GeometryReader { geo in
             let fraction = total > 0 ? min(1, max(0, (dragValue ?? value) / total)) : 0
+            let active = hover || dragValue != nil
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.28))
-                Capsule().fill(Theme.accent).frame(width: geo.size.width * fraction)
+                Capsule().fill(Color.white.opacity(0.22))
+                Capsule().fill(tint).frame(width: geo.size.width * fraction)
                 Circle()
-                    .fill(Theme.accent)
-                    .frame(width: 14, height: 14)
-                    .offset(x: geo.size.width * fraction - 7)
-                    .opacity(hover || dragValue != nil ? 1 : 0)
+                    .fill(tint)
+                    .frame(width: thumb, height: thumb)
+                    .offset(x: geo.size.width * fraction - thumb / 2)
+                    .opacity(active ? 1 : 0)
             }
-            .frame(height: hover || dragValue != nil ? height + 2 : height)
+            // Fine au repos, un peu plus épaisse au survol pour rester facile à attraper.
+            .frame(height: active ? height + 2 : height)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
@@ -676,6 +681,6 @@ struct Scrubber: View {
             .onHover { hover = $0 }
             .animation(.easeOut(duration: 0.12), value: hover)
         }
-        .frame(height: 18)
+        .frame(height: 16)
     }
 }
