@@ -31,6 +31,12 @@ struct RootView: View {
             Group {
                 switch state.tab {
                 case .home: HomeView()
+                case .categories:
+                    if let category = state.category {
+                        CategoryView(category: category).id(category.id)
+                    } else {
+                        CategoriesView()
+                    }
                 case .search: SearchView()
                 case .library: LibraryView()
                 case .downloads: DownloadsView()
@@ -69,15 +75,18 @@ struct TopBar: View {
     @FocusState private var searchFocused: Bool
 
     var body: some View {
-        HStack(spacing: 26) {
+        HStack(spacing: 22) {
             Text("LUMIO")
                 .font(.system(size: 23, weight: .black, design: .rounded))
                 .kerning(2.5)
                 .foregroundStyle(Theme.accent)
+                .lineLimit(1)
+                .fixedSize()
                 .padding(.leading, 78)
                 .onTapGesture { state.tab = .home }
 
             tabLink("Accueil", .home)
+            tabLink("Catégories", .categories)
             tabLink("Ma bibliothèque", .library)
             tabLink("Téléchargements", .downloads, badge: downloads.activeCount)
 
@@ -98,7 +107,8 @@ struct TopBar: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(width: searchFocused || !state.query.isEmpty ? 330 : 250, height: 32)
+            .frame(minWidth: 150, maxWidth: searchFocused || !state.query.isEmpty ? 330 : 250)
+            .frame(height: 32)
             .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(searchFocused ? 0.7 : 0.22)))
             .animation(.easeOut(duration: 0.2), value: searchFocused)
@@ -122,9 +132,14 @@ struct TopBar: View {
     }
 
     private func tabLink(_ title: String, _ tab: AppState.Tab, badge: Int = 0) -> some View {
-        Button { state.tab = tab } label: {
+        Button {
+            if tab == .categories { state.category = nil }
+            state.tab = tab
+        } label: {
             HStack(spacing: 6) {
                 Text(title)
+                    .lineLimit(1)
+                    .fixedSize()
                     .font(.system(size: 13.5, weight: state.tab == tab ? .bold : .medium))
                     .foregroundStyle(state.tab == tab ? Color.white : Theme.dim)
                 if badge > 0 {

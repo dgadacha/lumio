@@ -135,6 +135,11 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     private let library: Library
     private let maxConcurrent = 2
+    /// Vrai pendant une mise à jour du moteur : aucun téléchargement ne démarre.
+    var engineBusy = false
+
+    /// Relance la file, par exemple après une mise à jour du moteur.
+    func resume() { pump() }
 
     init(library: Library) { self.library = library }
 
@@ -170,6 +175,11 @@ final class DownloadManager: ObservableObject {
 
     private func pump() {
         let running = jobs.filter { $0.state == .running || $0.state == .finishing }.count
+        if engineBusy {
+            for job in jobs where job.state == .queued { job.stage = "En attente de la mise à jour du moteur" }
+            objectWillChange.send()
+            return
+        }
         guard running < maxConcurrent, let next = jobs.last(where: { $0.state == .queued }) else {
             objectWillChange.send()
             return
@@ -311,7 +321,7 @@ final class DownloadManager: ObservableObject {
 
 @MainActor
 final class AppState: ObservableObject {
-    enum Tab: Hashable { case home, search, library, downloads, settings }
+    enum Tab: Hashable { case home, categories, search, library, downloads, settings }
 
     @Published var tab: Tab = .home
     @Published var rows: [HomeRow] = []
@@ -332,6 +342,24 @@ final class AppState: ObservableObject {
     @Published var engineChecked = false
     @Published var engineBusy = false
     @Published var engineLog = ""
+    @Published var engineAutoUpdate = UserDefaults.standard.object(forKey: "engineAutoUpdate") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(engineAutoUpdate, forKey: "engineAutoUpdate")
+            if engineAutoUpdate { Task { await autoUpdateEngineIfDue() } }
+        }
+    }
+    @Published var engineLastCheck: Date? = {
+        let stamp = UserDefaults.standard.double(forKey: "engineLastCheck")
+        return stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil
+    }() {
+        didSet { UserDefaults.standard.set(engineLastCheck?.timeIntervalSince1970 ?? 0, forKey: "engineLastCheck") }
+    }
+
+    @Published var category: Category?
+    @Published var categoryRows: [String: [HomeRow]] = [:]
+    @Published var categoryLoading: Set<String> = []
+    /// Erreur de chargement par catégorie (clé : identifiant), pour ne pas l'afficher sur une autre.
+    @Published var categoryErrors: [String: String] = [:]
 
     @Published var aiRows: [HomeRow] = []
     @Published var aiBusy = false
@@ -339,7 +367,9 @@ final class AppState: ObservableObject {
     @Published var aiEnabled = UserDefaults.standard.bool(forKey: "aiEnabled") {
         didSet {
             UserDefaults.standard.set(aiEnabled, forKey: "aiEnabled")
-            if aiEnabled { Task { await refreshSuggestions(force: false) } }
+            if aiEnabled, ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil {
+                Task { await refreshSuggestions(force: false) }
+            }
         }
     }
 
@@ -367,9 +397,17 @@ final class AppState: ObservableObject {
         loadCachedHome()
         Task {
             await refreshEngine()
+            // Sans moteur, l'accueil ne peut pas charger : on l'installe d'abord. Sinon la
+            // vérification passe après, en arrière-plan.
+            if engine.path == nil { await autoUpdateEngineIfDue() }
             await loadHome(force: false)
-            await refreshSuggestions(force: false)
+            await autoUpdateEngineIfDue()
+            // Sous le pilote de test, pas d'appel automatique : il serait facturé sur la clé de l'utilisateur.
+            if ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil {
+                await refreshSuggestions(force: false)
+            }
         }
+        scheduleEngineChecks()
         loadCachedSuggestions()
         DebugDriver.startIfRequested(self)
     }
@@ -382,21 +420,55 @@ final class AppState: ObservableObject {
     }
 
     func updateEngine() {
-        guard !engineBusy else { return }
+        Task { await runEngineUpdate() }
+    }
+
+    /// Installe ou met à jour la copie privée de yt-dlp. Les téléchargements en attente
+    /// patientent pendant l'opération, pour ne pas lancer un moteur en cours de remplacement.
+    @discardableResult
+    func runEngineUpdate() async -> Bool {
+        guard !engineBusy else { return false }
         engineBusy = true
+        downloads.engineBusy = true
         engineLog = "Préparation…"
-        Task {
-            do {
-                try await Engine.installOrUpdate { line in
-                    DispatchQueue.main.async { self.engineLog = line }
-                }
-                await refreshEngine()
-                engineLog = "Moteur à jour (\(engine.version ?? "?"))"
-                if rows.isEmpty { await loadHome(force: true) }
-            } catch {
-                engineLog = "Échec : \(error.localizedDescription)"
+        let before = engine.managed ? engine.version : nil
+        var succeeded = false
+        do {
+            try await Engine.installOrUpdate { line in
+                DispatchQueue.main.async { if self.engineBusy { self.engineLog = line } }
             }
-            engineBusy = false
+            await refreshEngine()
+            engineLastCheck = Date()
+            let version = engine.version ?? "?"
+            engineLog = before == nil || before == engine.version
+                ? "Moteur à jour (\(version))"
+                : "Moteur mis à jour : \(before ?? "?") → \(version)"
+            succeeded = true
+        } catch {
+            engineLog = "Échec de la mise à jour : \(error.localizedDescription)"
+        }
+        engineBusy = false
+        downloads.engineBusy = false
+        downloads.resume()
+        if succeeded, rows.isEmpty { await loadHome(force: true) }
+        return succeeded
+    }
+
+    /// Vérification quotidienne, silencieuse, quand aucun téléchargement n'est en cours.
+    /// Sans copie privée du moteur, elle l'installe : YouTube refuse vite les versions anciennes.
+    func autoUpdateEngineIfDue() async {
+        guard engineAutoUpdate, engineChecked, !engineBusy, downloads.activeCount == 0 else { return }
+        let due = engineLastCheck.map { Date().timeIntervalSince($0) > 24 * 3600 } ?? true
+        guard due || !engine.managed else { return }
+        await runEngineUpdate()
+    }
+
+    private func scheduleEngineChecks() {
+        Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000)
+                await autoUpdateEngineIfDue()
+            }
         }
     }
 
@@ -482,6 +554,74 @@ final class AppState: ObservableObject {
         } else if let data = try? JSONEncoder().encode(HomeCache(date: Date(), config: rowsConfig, rows: rows)) {
             try? data.write(to: homeCache, options: .atomic)
         }
+    }
+
+    // MARK: Catégories
+
+    private struct CategoryCache: Codable {
+        var entries: [String: Entry] = [:]
+        struct Entry: Codable {
+            let date: Date
+            let rows: [HomeRow]
+        }
+    }
+
+    private var categoryCacheFile: URL { Paths.support.appendingPathComponent("categories.json") }
+
+    private func readCategoryCache() -> CategoryCache {
+        guard let data = try? Data(contentsOf: categoryCacheFile),
+              let cache = try? JSONDecoder().decode(CategoryCache.self, from: data) else { return CategoryCache() }
+        return cache
+    }
+
+    func open(_ category: Category) {
+        tab = .categories
+        categoryErrors[category.id] = nil
+        self.category = category
+    }
+
+    /// Charge les rangées d'une catégorie : cache disque de 6 h, sinon recherches en parallèle.
+    func loadCategory(_ category: Category, force: Bool) async {
+        guard !categoryLoading.contains(category.id) else { return }
+        let cached = readCategoryCache().entries[category.id]
+        if let cached, categoryRows[category.id] == nil { categoryRows[category.id] = cached.rows }
+        if !force, let cached, Date().timeIntervalSince(cached.date) < 6 * 3600, !cached.rows.isEmpty { return }
+        guard engine.path != nil else {
+            if categoryRows[category.id] == nil { categoryErrors[category.id] = EngineError.missing.localizedDescription }
+            return
+        }
+        categoryLoading.insert(category.id)
+        categoryErrors[category.id] = nil
+        let limit = category.rows.count == 1 ? 36 : 18
+        var loaded: [Int: HomeRow] = [:]
+        var firstError: String?
+        await withTaskGroup(of: (Int, HomeRow?, String?).self) { group in
+            for (index, row) in category.rows.enumerated() {
+                group.addTask {
+                    do {
+                        let items = try await Engine.search(row.query, limit: limit)
+                        return (index, HomeRow(title: row.title, query: row.query, items: items), nil)
+                    } catch {
+                        return (index, nil, error.localizedDescription)
+                    }
+                }
+            }
+            for await (index, row, error) in group {
+                if let row, !row.items.isEmpty {
+                    loaded[index] = row
+                    categoryRows[category.id] = loaded.keys.sorted().compactMap { loaded[$0] }
+                }
+                if let error, firstError == nil { firstError = error }
+            }
+        }
+        categoryLoading.remove(category.id)
+        guard !loaded.isEmpty else {
+            if categoryRows[category.id] == nil { categoryErrors[category.id] = firstError ?? "Aucune vidéo trouvée." }
+            return
+        }
+        var cache = readCategoryCache()
+        cache.entries[category.id] = .init(date: Date(), rows: categoryRows[category.id] ?? [])
+        if let data = try? JSONEncoder().encode(cache) { try? data.write(to: categoryCacheFile, options: .atomic) }
     }
 
     // MARK: Suggestions par Claude

@@ -29,7 +29,7 @@ enum DebugDriver {
                 case "snap":
                     log("snap \(argument): \(snapshot(to: argument))")
                 case "tab":
-                    let tabs: [String: AppState.Tab] = ["home": .home, "search": .search, "library": .library, "downloads": .downloads, "settings": .settings]
+                    let tabs: [String: AppState.Tab] = ["home": .home, "categories": .categories, "search": .search, "library": .library, "downloads": .downloads, "settings": .settings]
                     if let tab = tabs[argument] { state.tab = tab }
                 case "search":
                     state.query = argument
@@ -91,6 +91,15 @@ enum DebugDriver {
                     state.playing = nil
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     log("stop: position=\(state.library.items.first?.position ?? -1)")
+                case "autoupdate":
+                    // Simule une vérification due : remet la date à zéro puis laisse l'app décider.
+                    state.engineLastCheck = nil
+                    log("autoupdate: activée=\(state.engineAutoUpdate) avant=\(state.engine.version ?? "aucun")")
+                    await state.autoUpdateEngineIfDue()
+                    log("autoupdate: après=\(state.engine.version ?? "aucun") vérifié=\(state.engineLastCheck != nil) — \(state.engineLog)")
+                    let stamp = state.engineLastCheck
+                    await state.autoUpdateEngineIfDue()
+                    log("autoupdate: seconde passe sans effet=\(stamp == state.engineLastCheck)")
                 case "engine":
                     state.updateEngine()
                     while state.engineBusy { try? await Task.sleep(nanoseconds: 500_000_000) }
@@ -110,6 +119,26 @@ enum DebugDriver {
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         log("cancel: état=\(job.state) dossier présent=\(FileManager.default.fileExists(atPath: folder.path))")
                     } else { log("cancel: aucun téléchargement actif") }
+                case "allcategories":
+                    // Charge chaque catégorie et signale les rangées vides ou en échec.
+                    for category in Category.all {
+                        await state.loadCategory(category, force: false)
+                        let rows = state.categoryRows[category.id] ?? []
+                        let missing = category.rows.count - rows.count
+                        log("catégorie \(category.id): \(rows.count)/\(category.rows.count) rangées, \(rows.map { String($0.items.count) }.joined(separator: "+")) vidéos\(missing > 0 ? " — MANQUE \(missing)" : "")\(state.categoryErrors[category.id].map { " — ERREUR \($0)" } ?? "")")
+                    }
+                case "query":
+                    state.query = argument
+                case "category":
+                    if let category = Category.all.first(where: { $0.id == argument }) {
+                        state.open(category)
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        while state.categoryLoading.contains(category.id) { try? await Task.sleep(nanoseconds: 300_000_000) }
+                        for row in state.categoryRows[category.id] ?? [] {
+                            log("catégorie \(category.id): \(row.title) — \(row.items.count) vidéos")
+                        }
+                        log("catégorie \(category.id): erreur=\(state.categoryErrors[category.id] ?? "aucune")")
+                    } else { log("catégorie inconnue : \(argument)") }
                 case "keychain":
                     // Aller-retour dans le Trousseau avec une valeur factice ; seul le résultat est journalisé.
                     let had = UserDefaults.standard.bool(forKey: "aiKeySaved")

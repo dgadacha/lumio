@@ -23,6 +23,7 @@ puis regardez hors ligne dans le lecteur intégré.
 | | |
 |---|---|
 | **Accueil en rangées** | Une bannière « À la une », puis des rangées horizontales par thème, modifiables dans les réglages. |
+| **Catégories** | Un onglet pour explorer par thème (documentaires, histoire, musique live…) ou par chaîne (ARTE, France Culture, CNRS…). |
 | **Recherche** | Par mots-clés, ou en collant le lien d'une vidéo, d'une playlist ou d'une chaîne. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
@@ -108,12 +109,14 @@ Le script compile, assemble `build/Lumio.app`, la signe localement, puis la copi
 
 ### Premier lancement
 
-Au premier lancement, ouvrez **Réglages → Moteur de téléchargement** et cliquez sur
-**Installer la dernière version**. Lumio installe sa propre copie de yt-dlp dans un
-environnement Python isolé, sans rien modifier d'autre sur le système.
+Au premier lancement, Lumio installe sa propre copie de yt-dlp dans un environnement Python
+isolé, sans rien modifier d'autre sur le système. Elle est ensuite **mise à jour automatiquement** :
+une fois par jour, quand aucun téléchargement n'est en cours, Lumio vérifie et installe la dernière
+version. Les téléchargements lancés pendant une mise à jour patientent quelques secondes.
 
-> YouTube change souvent. Si les téléchargements échouent du jour au lendemain,
-> le premier réflexe est de mettre à jour le moteur depuis les réglages.
+> YouTube change souvent, et un moteur de quelques mois est refusé. La mise à jour automatique
+> se désactive dans **Réglages → Moteur de téléchargement**, où un bouton permet aussi de la
+> forcer.
 
 ## Où sont les données
 
@@ -137,6 +140,7 @@ pour les téléchargements.
 | `Models.swift` | Modèles, et traduction des options en arguments yt-dlp |
 | `Claude.swift` | Appel à l'API Claude (sortie JSON structurée) et stockage de la clé dans le Trousseau |
 | `Stores.swift` | Bibliothèque, file de téléchargements, état de l'app |
+| `Categories.swift` | Catalogue des catégories (thèmes et chaînes), onglet et page d'une catégorie |
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |
 | `Player.swift` | Lecteur hors ligne |

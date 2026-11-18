@@ -55,7 +55,17 @@ struct SettingsView: View {
                     Button(state.engine.managed ? "Mettre à jour" : "Installer la dernière version") { state.updateEngine() }
                         .disabled(state.engineBusy)
                 }
-                Text("Lumio installe sa propre copie de yt-dlp dans son dossier de données, sans toucher au reste du système. ffmpeg doit être présent (Homebrew).")
+                Divider().overlay(Color.white.opacity(0.1))
+                Toggle(isOn: $state.engineAutoUpdate) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Mise à jour automatique").font(.system(size: 13.5, weight: .semibold))
+                        Text(state.engineLastCheck.map { "Dernière vérification : \($0.formatted(date: .abbreviated, time: .shortened))" }
+                             ?? "Aucune vérification pour l'instant")
+                            .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    }
+                }
+                .toggleStyle(.switch)
+                Text("Une fois par jour, quand aucun téléchargement n'est en cours, Lumio vérifie et installe la dernière version de yt-dlp dans son dossier de données, sans toucher au reste du système. ffmpeg doit être présent (Homebrew).")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.faint)
             }
