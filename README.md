@@ -99,7 +99,9 @@ film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, sais
   regroupe les doublons et ignore les vidéos personnelles (photos, captures d'écran).
 - **Lecture seule** : vos fichiers ne sont jamais déplacés, renommés ni supprimés.
 - **Lecture des MKV** : macOS ne lit pas ce format. Lumio recopie donc l'épisode dans un fichier
-  temporaire lisible, sans réencoder la vidéo, ce qui prend une à deux secondes. Les deux dernières
+  temporaire lisible, sans réencoder la vidéo, ce qui prend une à deux secondes. Au passage, chaque
+  image est recalée sur la grille exacte de sa cadence : un MKV horodate à la milliseconde, ce qui
+  donnerait sinon une lecture légèrement saccadée. Les deux dernières
   copies sont gardées dans le cache, les autres sont effacées.
 - **Dans le lecteur** : un panneau liste les épisodes de la série et permet d'en changer sans quitter
   la lecture ; à la fin d'un épisode, le suivant démarre après un compte à rebours annulable

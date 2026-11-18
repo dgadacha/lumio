@@ -40,6 +40,8 @@ struct MediaTrack: Hashable {
 struct MediaProbe {
     var duration: Double = 0
     var videoCodec: String?
+    /// Cadence déclarée de la vidéo, en fraction (24000/1001 pour 23,976 images par seconde).
+    var frameRate: (num: Int, den: Int)?
     var audio: [MediaTrack] = []
     var subtitles: [MediaTrack] = []
     /// Flux « image attachée » : une affiche fournie avec le fichier.
@@ -60,7 +62,7 @@ actor MediaInspector {
         guard let ffprobe = LocalTools.tool("ffprobe"),
               let result = try? await ProcessRunner.run(ffprobe, [
                   "-v", "error", "-show_entries",
-                  "format=duration:stream=index,codec_type,codec_name:stream_tags=language,title:stream_disposition=attached_pic",
+                  "format=duration:stream=index,codec_type,codec_name,r_frame_rate:stream_tags=language,title:stream_disposition=attached_pic",
                   "-of", "json", path,
               ], env: Engine.environment),
               let root = try? JSONSerialization.jsonObject(with: result.out) as? [String: Any] else { return nil }
@@ -73,7 +75,10 @@ actor MediaInspector {
             let attached = ((stream["disposition"] as? [String: Any])?["attached_pic"] as? NSNumber)?.intValue == 1
             switch stream["codec_type"] as? String {
             case "video" where attached: probe.coverIndex = index
-            case "video" where probe.videoCodec == nil: probe.videoCodec = codec
+            case "video" where probe.videoCodec == nil:
+                probe.videoCodec = codec
+                let parts = ((stream["r_frame_rate"] as? String) ?? "").split(separator: "/").compactMap { Int($0) }
+                if parts.count == 2, parts[1] > 0 { probe.frameRate = (parts[0], parts[1]) }
             case "audio": probe.audio.append(track)
             case "subtitle": probe.subtitles.append(track)
             default: break
@@ -130,19 +135,23 @@ enum MediaPreparer {
         var playURL = source
         if !directExtensions.contains(source.pathExtension.lowercased()) {
             // Le suffixe change quand la recette de conversion change : les anciens fichiers ne sont pas réutilisés.
-            let target = remuxDir.appendingPathComponent("\(key)-v2.mp4")
+            let target = remuxDir.appendingPathComponent("\(key)-v3.mp4")
             if !FileManager.default.fileExists(atPath: target.path) {
                 let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value ?? 0
                 let free = (try? remuxDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                     .volumeAvailableCapacityForImportantUsage ?? Int64.max
                 guard free > size + (1 << 30) else { throw LocalMediaError.noSpace(needed: size + (1 << 30)) }
 
-                let partial = remuxDir.appendingPathComponent("\(key)-v2.partial.mp4")
+                let partial = remuxDir.appendingPathComponent("\(key)-v3.partial.mp4")
                 var args = ["-v", "error", "-y", "-i", path, "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy"]
                 // Le lecteur système n'accepte le HEVC en MP4 que sous l'étiquette hvc1. Le filtre reconstruit
                 // l'en-tête du flux : certains MKV n'y mettent pas les paramètres de décodage, et le MP4 obtenu
                 // serait alors refusé par le décodage matériel (erreur -8971) alors qu'il paraît valide.
-                if probe.videoCodec == "hevc" { args += ["-bsf:v", "hevc_mp4toannexb", "-tag:v", "hvc1"] }
+                var filters: [String] = []
+                if probe.videoCodec == "hevc" { filters.append("hevc_mp4toannexb") }
+                filters += Self.retimingFilters(for: probe.frameRate)
+                if !filters.isEmpty { args += ["-bsf:v", filters.joined(separator: ",")] }
+                if probe.videoCodec == "hevc" { args += ["-tag:v", "hvc1"] }
                 // L'audio est recopié quand le lecteur sait le lire, sinon converti en AAC (rapide).
                 let copyAudio = probe.audio.allSatisfy { MediaProbe.passthroughAudio.contains($0.codec) }
                 args += copyAudio ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "256k"]
@@ -164,6 +173,28 @@ enum MediaPreparer {
 
         return PreparedMedia(playURL: playURL, duration: probe.duration,
                              subtitles: await subtitles(for: path, key: key, probe: probe, ffmpeg: ffmpeg))
+    }
+
+    /// Filtres qui recalent chaque image sur la grille exacte de sa cadence.
+    ///
+    /// Un MKV horodate ses images à la milliseconde : à 23,976 images par seconde, elles sont espacées de
+    /// 41 ou 42 ms au lieu de 41,708. Le lecteur de macOS suit ces valeurs à la lettre, ce qui décale une
+    /// image sur vingt d'un rafraîchissement d'écran et donne une lecture saccadée (VLC, lui, les lisse).
+    /// Le premier filtre passe dans une unité assez fine, le second arrondit chaque horodatage au multiple
+    /// exact de la durée d'une image. Seules les cadences fixes usuelles sont recalées : une vidéo à cadence
+    /// variable garde ses horodatages d'origine.
+    static func retimingFilters(for rate: (num: Int, den: Int)?) -> [String] {
+        guard let rate else { return [] }
+        let unit: (base: Int, step: Int)
+        switch (rate.num, rate.den) {
+        case (24000, 1001), (30000, 1001), (60000, 1001): unit = (rate.num, rate.den)
+        case (24, 1), (25, 1), (30, 1), (50, 1), (60, 1): unit = (rate.num * 1000, 1000)
+        default: return []
+        }
+        return [
+            "setts=time_base=1/\(unit.base):pts=PTS:dts=DTS",
+            "setts=pts=round(PTS/\(unit.step))*\(unit.step):dts=round(DTS/\(unit.step))*\(unit.step)",
+        ]
     }
 
     /// Extrait les pistes de sous-titres texte en WebVTT. Les pistes image (PGS, VobSub) sont ignorées.
@@ -195,8 +226,8 @@ enum MediaPreparer {
         // Une conversion interrompue laisse un fichier partiel inutilisable.
         for file in files where file.lastPathComponent.hasSuffix(".partial.mp4") { try? FileManager.default.removeItem(at: file) }
         // Conversions faites avec une ancienne recette : inutilisables.
-        for file in files where !file.lastPathComponent.contains("-v2") { try? FileManager.default.removeItem(at: file) }
-        let complete = files.filter { $0.lastPathComponent.hasSuffix("-v2.mp4") }.sorted {
+        for file in files where !file.lastPathComponent.contains("-v3") { try? FileManager.default.removeItem(at: file) }
+        let complete = files.filter { $0.lastPathComponent.hasSuffix("-v3.mp4") }.sorted {
             let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             return a > b

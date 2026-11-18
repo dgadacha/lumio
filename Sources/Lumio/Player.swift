@@ -226,7 +226,9 @@ final class PlayerModel: ObservableObject {
                 + "erreur=\(item.error?.localizedDescription ?? "aucune") journal=\(item.errorLog()?.events.last?.errorComment ?? "-") reprise=\(self.media.startPosition) "
                 + "détail=\((item.error as NSError?).map { "\($0.domain) \($0.code) sous-jacente=\(($0.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain) \($0.code)" } ?? "-") raison=\($0.localizedFailureReason ?? "-")" } ?? "-") "
                 + "audio=\(self.audioChoices.map(\.label)) choisie=\(self.audioChoice.map(String.init) ?? "-") fichier=\(self.media.url.lastPathComponent) "
-                + "sous-titre=\(self.subtitle?.label ?? "aucun") texte=\(self.caption.count)c compte=\(self.nextCountdown.map(String.init) ?? "-")"
+                + "sous-titre=\(self.subtitle?.label ?? "aucun") texte=\(self.caption.count)c compte=\(self.nextCountdown.map(String.init) ?? "-") "
+                + "ips=\(item.tracks.filter { $0.assetTrack?.mediaType == .video }.map { String(format: "%.1f", $0.currentVideoFrameRate) }) "
+                + "écran=\(NSApp.keyWindow?.screen?.maximumFramesPerSecond ?? 0)Hz"
         }
     }
 
