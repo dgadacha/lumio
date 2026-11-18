@@ -1,20 +1,95 @@
 import SwiftUI
 import AVKit
 
+// MARK: - Ce que le lecteur sait lire
+
+struct PlayerSubtitle: Identifiable, Hashable {
+    let code: String
+    let label: String
+    /// Fichier .vtt local, ou adresse distante pour une lecture en streaming.
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+/// Un fichier de la bibliothèque ou un flux lu sans téléchargement.
+struct PlayableMedia: Identifiable, Hashable {
+    let id: String
+    let video: VideoSummary
+    let detailLine: String
+    let url: URL
+    let kind: MediaKind
+    let images: [URL]
+    let subtitles: [PlayerSubtitle]
+    let startPosition: Double
+    /// Renseigné pour un fichier de la bibliothèque ; nul pour un flux.
+    let libraryID: UUID?
+
+    var isStream: Bool { libraryID == nil }
+
+    init(item: LibraryItem) {
+        id = item.id.uuidString
+        video = VideoSummary(id: item.videoID, title: item.title, channel: item.channel, duration: item.duration,
+                             viewCount: nil, thumbnail: nil)
+        detailLine = [item.channel, item.quality].compactMap { $0 }.joined(separator: " · ")
+        url = item.mediaURL
+        kind = item.kind
+        images = item.images
+        subtitles = item.subtitles.map {
+            PlayerSubtitle(code: $0.code, label: Fmt.language($0.code), url: item.folderURL.appendingPathComponent($0.file))
+        }
+        startPosition = item.position
+        libraryID = item.id
+    }
+
+    init(stream detail: VideoDetail, url: URL, startPosition: Double) {
+        let summary = detail.summary
+        id = "stream-\(summary.id)"
+        video = summary
+        detailLine = [summary.channel, "Streaming"].compactMap { $0 }.joined(separator: " · ")
+        self.url = url
+        kind = .video
+        images = summary.heroImages
+        // Pistes manuelles, langue d'origine automatique, puis quelques traductions courantes.
+        let common = ["fr", "en", "es", "de", "it", "pt"]
+        let originals = detail.autoSubtitles.filter { $0.code.hasSuffix("-orig") }
+        let translated = detail.autoSubtitles.filter { common.contains($0.code) }
+        // Une ligne par langue : la piste manuelle d'abord, puis la transcription d'origine, puis la traduction.
+        var seen = Set<String>()
+        subtitles = (detail.subtitles + originals + translated).compactMap { track -> PlayerSubtitle? in
+            let language = track.code.replacingOccurrences(of: "-orig", with: "")
+            guard let raw = track.url, let remote = URL(string: raw), seen.insert(language).inserted else { return nil }
+            let label: String
+            if !track.auto { label = track.name }
+            else if track.code.hasSuffix("-orig") { label = "\(Fmt.language(language)) (transcription automatique)" }
+            else { label = "\(Fmt.language(language)) (traduction automatique)" }
+            return PlayerSubtitle(code: track.code, label: label, url: remote)
+        }
+        self.startPosition = startPosition
+        libraryID = nil
+    }
+}
+
+// MARK: - Modèle du lecteur
+
 @MainActor
 final class PlayerModel: ObservableObject {
-    let item: LibraryItem
+    let media: PlayableMedia
     let player = AVPlayer()
 
     @Published var time: Double = 0
     @Published var duration: Double = 0
     @Published var isPlaying = false
+    @Published var isBuffering = false
     @Published var caption = ""
-    @Published var subtitle: LocalSubtitle?
+    @Published var subtitle: PlayerSubtitle?
     @Published var rate: Float = 1
     @Published var volume: Float = 1 { didSet { player.volume = volume } }
+    @Published var maxHeight: Int = 0
+    /// Hauteur de l'image réellement affichée (le flux adaptatif en change selon le débit).
+    @Published var videoHeight: Int = 0
     @Published var controlsVisible = true
     @Published var failed: String?
+    @Published var notice: String?
 
     var onClose: () -> Void = {}
     private var cues: [Cue] = []
@@ -22,18 +97,21 @@ final class PlayerModel: ObservableObject {
     private var keyMonitor: Any?
     private var statusObserver: NSKeyValueObservation?
     private var hideWork: DispatchWorkItem?
+    private var subtitleTask: Task<Void, Never>?
+    private let playerItem: AVPlayerItem
 
-    init(item: LibraryItem) {
-        self.item = item
-        duration = item.duration ?? 0
-        let asset = AVURLAsset(url: item.mediaURL)
-        let playerItem = AVPlayerItem(asset: asset)
+    init(media: PlayableMedia) {
+        self.media = media
+        duration = media.video.duration ?? 0
+        let asset = AVURLAsset(url: media.url)
+        playerItem = AVPlayerItem(asset: asset)
         // Les sous-titres sont dessinés par l'app : on coupe ceux intégrés au fichier pour éviter le doublon.
         player.appliesMediaSelectionCriteriaAutomatically = false
         player.replaceCurrentItem(with: playerItem)
+        let item = playerItem
         Task {
             if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
-                playerItem.select(nil, in: group)
+                item.select(nil, in: group)
             }
             if let loaded = try? await asset.load(.duration), loaded.seconds.isFinite, loaded.seconds > 0 {
                 duration = loaded.seconds
@@ -52,12 +130,14 @@ final class PlayerModel: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated { self?.handle(key: event) ?? true } ? event : nil
         }
-        if item.position > 5 {
-            player.seek(to: CMTime(seconds: item.position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-            time = item.position
+        if media.startPosition > 5 {
+            player.seek(to: CMTime(seconds: media.startPosition, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            time = media.startPosition
         }
-        let preferred = UserDefaults.standard.string(forKey: "subtitleLanguage")
-        if let preferred, let match = item.subtitles.first(where: { $0.code == preferred }) {
+        // La langue mémorisée n'est rechargée d'office que pour un fichier local : en streaming,
+        // chaque piste est une requête à YouTube, faite seulement à la demande.
+        if !media.isStream, let preferred = UserDefaults.standard.string(forKey: "subtitleLanguage"),
+           let match = media.subtitles.first(where: { $0.code == preferred }) {
             select(subtitle: match, remember: false)
         }
         player.play()
@@ -69,6 +149,12 @@ final class PlayerModel: ObservableObject {
         guard seconds.isFinite else { return }
         time = seconds
         isPlaying = player.rate != 0
+        isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        let height = Int(playerItem.presentationSize.height.rounded())
+        if height != videoHeight {
+            videoHeight = height
+            DebugDriver.videoHeight = height
+        }
         let active = cues.last { $0.start <= seconds && seconds < $0.end }?.text ?? ""
         if active != caption { caption = active }
     }
@@ -106,7 +192,9 @@ final class PlayerModel: ObservableObject {
     func seek(to seconds: Double) {
         let target = max(0, min(seconds, max(duration - 0.2, 0)))
         time = target
-        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        // En streaming, une tolérance large évite de recharger un segment pour un écart minime.
+        let tolerance = media.isStream ? CMTime(seconds: 1, preferredTimescale: 600) : .zero
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
     }
 
     func set(rate newRate: Float) {
@@ -114,14 +202,46 @@ final class PlayerModel: ObservableObject {
         if player.rate != 0 { player.rate = newRate }
     }
 
-    func select(subtitle track: LocalSubtitle?, remember: Bool = true) {
+    /// Plafonne la résolution d'un flux adaptatif ; 0 laisse le lecteur choisir.
+    func set(maxHeight height: Int) {
+        maxHeight = height
+        playerItem.preferredMaximumResolution = height > 0
+            ? CGSize(width: CGFloat(height) * 16 / 9 * 1.4, height: CGFloat(height))
+            : .zero
+    }
+
+    func select(subtitle track: PlayerSubtitle?, remember: Bool = true) {
+        subtitleTask?.cancel()
         subtitle = track
         caption = ""
         cues = []
         if remember { UserDefaults.standard.set(track?.code, forKey: "subtitleLanguage") }
-        guard let track,
-              let text = try? String(contentsOf: item.folderURL.appendingPathComponent(track.file), encoding: .utf8) else { return }
-        cues = VTT.parse(text)
+        guard let track else { return }
+        if track.url.isFileURL {
+            if let text = try? String(contentsOf: track.url, encoding: .utf8) { cues = VTT.parse(text) }
+            return
+        }
+        subtitleTask = Task { [weak self] in
+            let loaded: [Cue]? = await {
+                guard let (data, response) = try? await URLSession.shared.data(from: track.url),
+                      (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                return VTT.parse(String(decoding: data, as: UTF8.self))
+            }()
+            guard let self, !Task.isCancelled, self.subtitle == track else { return }
+            if let loaded, !loaded.isEmpty {
+                self.cues = loaded
+            } else {
+                self.subtitle = nil
+                self.show(notice: "Sous-titres indisponibles pour l'instant : YouTube limite leur débit.")
+            }
+        }
+    }
+
+    private func show(notice text: String) {
+        notice = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            if self?.notice == text { self?.notice = nil }
+        }
     }
 
     func toggleFullScreen() {
@@ -143,12 +263,14 @@ final class PlayerModel: ObservableObject {
 
     func shutdown() -> Double {
         hideWork?.cancel()
+        subtitleTask?.cancel()
         player.pause()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         timeObserver = nil
         keyMonitor = nil
         statusObserver = nil
+        player.replaceCurrentItem(with: nil)
         return time
     }
 }
@@ -168,23 +290,27 @@ struct PlayerSurface: NSViewRepresentable {
     func updateNSView(_ view: AVPlayerView, context: Context) {}
 }
 
+// MARK: - Vue
+
 struct PlayerView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
     @StateObject private var model: PlayerModel
 
-    init(item: LibraryItem) {
-        _model = StateObject(wrappedValue: PlayerModel(item: item))
+    init(media: PlayableMedia) {
+        _model = StateObject(wrappedValue: PlayerModel(media: media))
     }
+
+    private var media: PlayableMedia { model.media }
 
     var body: some View {
         ZStack {
             Color.black
-            if model.item.kind == .audio {
-                RemoteImage(urls: model.item.images).blur(radius: 50).opacity(0.5)
+            if media.kind == .audio {
+                RemoteImage(urls: media.images).blur(radius: 50).opacity(0.5)
                 Color.clear
                     .frame(width: 480, height: 270)
-                    .overlay(RemoteImage(urls: model.item.images))
+                    .overlay(RemoteImage(urls: media.images))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .shadow(radius: 30)
             } else {
@@ -197,11 +323,15 @@ struct PlayerView: View {
                 .onTapGesture(count: 2) { model.toggleFullScreen() }
                 .onTapGesture { model.togglePlay(); model.pokeControls() }
 
-            if !model.caption.isEmpty {
+            if model.isBuffering, model.failed == nil {
+                ProgressView().controlSize(.large).allowsHitTesting(false)
+            }
+
+            if !model.caption.isEmpty || model.notice != nil {
                 VStack {
                     Spacer()
-                    Text(model.caption)
-                        .font(.system(size: 26, weight: .semibold))
+                    Text(model.notice ?? model.caption)
+                        .font(.system(size: model.notice == nil ? 26 : 15, weight: .semibold))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
@@ -214,10 +344,16 @@ struct PlayerView: View {
             }
 
             if let failed = model.failed {
-                EmptyState(symbol: "exclamationmark.triangle", title: "Lecture impossible", message: failed,
-                           actionTitle: "Ouvrir dans le lecteur par défaut") {
-                    NSWorkspace.shared.open(model.item.mediaURL)
-                    close()
+                if media.isStream {
+                    EmptyState(symbol: "exclamationmark.triangle", title: "Lecture en streaming impossible",
+                               message: "\(failed)\nLe lien fourni par YouTube a peut-être expiré : rouvrez la vidéo, ou téléchargez-la.",
+                               actionTitle: "Fermer") { close() }
+                } else {
+                    EmptyState(symbol: "exclamationmark.triangle", title: "Lecture impossible", message: failed,
+                               actionTitle: "Ouvrir dans le lecteur par défaut") {
+                        NSWorkspace.shared.open(media.url)
+                        close()
+                    }
                 }
             }
 
@@ -229,7 +365,25 @@ struct PlayerView: View {
             if case .active = phase { model.pokeControls() }
         }
         .onAppear { model.onClose = close }
-        .onDisappear { library.updatePosition(model.item.id, position: model.shutdown()) }
+        .onDisappear {
+            savePosition()
+            _ = model.shutdown()
+        }
+        // Quitter l'app pendant la lecture ne doit pas faire perdre la position.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            savePosition()
+        }
+    }
+
+    /// Mémorise la position, sauf après un échec ou sans lecture réelle : un lien expiré
+    /// laisserait sinon une position nulle écraser la précédente.
+    private func savePosition() {
+        guard model.failed == nil, model.time > 1 else { return }
+        if let libraryID = media.libraryID {
+            library.updatePosition(libraryID, position: model.time)
+        } else {
+            state.history.record(media.video, position: model.time, duration: model.duration)
+        }
     }
 
     private func close() {
@@ -242,8 +396,8 @@ struct PlayerView: View {
             HStack(spacing: 16) {
                 IconButton(symbol: "chevron.left", size: 17) { close() }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.item.title).font(.system(size: 17, weight: .bold)).lineLimit(1)
-                    Text([model.item.channel, model.item.quality].compactMap { $0 }.joined(separator: " · "))
+                    Text(media.video.title).font(.system(size: 17, weight: .bold)).lineLimit(1)
+                    Text(media.detailLine)
                         .font(.system(size: 12.5))
                         .foregroundStyle(Theme.dim)
                 }
@@ -276,6 +430,7 @@ struct PlayerView: View {
                             .frame(width: 90)
                     }
                     Spacer()
+                    if media.isStream { qualityMenu }
                     subtitleMenu
                     rateMenu
                     playerButton("arrow.up.left.and.arrow.down.right", size: 17) { model.toggleFullScreen() }
@@ -302,25 +457,45 @@ struct PlayerView: View {
         .buttonStyle(.plain)
     }
 
+    private func menuLabel(_ text: String, _ symbol: String, dimmed: Bool = false) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(dimmed ? Theme.faint : .white)
+    }
+
+    private var qualityMenu: some View {
+        Menu {
+            ForEach([0, 1080, 720, 480, 360], id: \.self) { height in
+                Button { model.set(maxHeight: height) } label: {
+                    Label(height == 0 ? "Automatique" : "\(height)p maximum", systemImage: model.maxHeight == height ? "checkmark" : "")
+                }
+            }
+        } label: {
+            menuLabel((model.maxHeight == 0 ? "Auto" : "Max \(model.maxHeight)p")
+                      + (model.videoHeight > 0 ? " · \(model.videoHeight)p" : ""), "dial.medium.fill")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
     private var subtitleMenu: some View {
         Menu {
             Button { model.select(subtitle: nil) } label: {
                 Label("Désactivés", systemImage: model.subtitle == nil ? "checkmark" : "")
             }
-            ForEach(model.item.subtitles) { track in
+            ForEach(media.subtitles) { track in
                 Button { model.select(subtitle: track) } label: {
-                    Label(Fmt.language(track.code), systemImage: model.subtitle == track ? "checkmark" : "")
+                    Label(track.label, systemImage: model.subtitle == track ? "checkmark" : "")
                 }
             }
         } label: {
-            Label(model.subtitle.map { Fmt.language($0.code) } ?? "Sous-titres", systemImage: "captions.bubble.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(model.item.subtitles.isEmpty ? Theme.faint : .white)
+            menuLabel(model.subtitle?.label ?? "Sous-titres", "captions.bubble.fill", dimmed: media.subtitles.isEmpty)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(model.item.subtitles.isEmpty)
+        .disabled(media.subtitles.isEmpty)
     }
 
     private var rateMenu: some View {
@@ -331,9 +506,7 @@ struct PlayerView: View {
                 }
             }
         } label: {
-            Label(model.rate == 1 ? "Vitesse" : "×\(String(format: "%g", model.rate))", systemImage: "speedometer")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+            menuLabel(model.rate == 1 ? "Vitesse" : "×\(String(format: "%g", model.rate))", "speedometer")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

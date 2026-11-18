@@ -52,6 +52,58 @@ final class Library: ObservableObject {
     var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
 }
 
+// MARK: - Historique de lecture en streaming
+
+struct HistoryEntry: Codable, Identifiable, Hashable {
+    var video: VideoSummary
+    var position: Double
+    var date: Date
+    var id: String { video.id }
+
+    var progress: Double? {
+        guard let duration = video.duration, duration > 0, position > 5 else { return nil }
+        return min(1, position / duration)
+    }
+}
+
+/// Ce qui a été regardé sans téléchargement : sert à reprendre la lecture. Reste sur ce Mac.
+@MainActor
+final class WatchHistory: ObservableObject {
+    @Published private(set) var entries: [HistoryEntry] = []
+    private let file = Paths.support.appendingPathComponent("history.json")
+
+    init() {
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? JSONDecoder().decode([HistoryEntry].self, from: data) else { return }
+        entries = decoded
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(entries) { try? data.write(to: file, options: .atomic) }
+    }
+
+    func entry(for videoID: String) -> HistoryEntry? {
+        entries.first { $0.video.id == videoID }
+    }
+
+    func record(_ video: VideoSummary, position: Double, duration: Double) {
+        var video = video
+        if video.duration == nil, duration > 0 { video.duration = duration }
+        let total = video.duration ?? 0
+        // Une vidéo vue jusqu'au bout repart du début la fois suivante.
+        let kept = total > 0 && position > total * 0.96 ? 0 : position
+        entries.removeAll { $0.video.id == video.id }
+        entries.insert(HistoryEntry(video: video, position: kept, date: Date()), at: 0)
+        entries = Array(entries.prefix(100))
+        save()
+    }
+
+    func clear() {
+        entries = []
+        save()
+    }
+}
+
 // MARK: - Téléchargements
 
 @MainActor
@@ -336,7 +388,10 @@ final class AppState: ObservableObject {
     @Published var searchedQuery = ""
 
     @Published var detail: VideoSummary?
-    @Published var playing: LibraryItem?
+    @Published var playing: PlayableMedia?
+    /// Identifiant de la vidéo dont le flux est en cours de préparation.
+    @Published var streamLoading: String?
+    @Published var streamError: String?
 
     @Published var engine = EngineInfo()
     @Published var engineChecked = false
@@ -375,6 +430,7 @@ final class AppState: ObservableObject {
 
     let library: Library
     let downloads: DownloadManager
+    let history = WatchHistory()
     private let aiCacheFile = Paths.support.appendingPathComponent("suggestions.json")
     private var detailCache: [String: VideoDetail] = [:]
     private var searchToken = 0
@@ -556,6 +612,32 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Lecture sans téléchargement
+
+    /// Lit une vidéo en streaming. Si elle est déjà dans la bibliothèque, on lit le fichier local.
+    func watch(_ video: VideoSummary) async {
+        if let owned = library.item(forVideo: video.id), owned.playable {
+            play(owned)
+            return
+        }
+        guard streamLoading == nil else { return }
+        streamLoading = video.id
+        streamError = nil
+        defer { streamLoading = nil }
+        do {
+            let loaded = try await loadDetail(video)
+            guard let raw = loaded.streamURL, let url = URL(string: raw) else {
+                streamError = "YouTube ne propose pas de flux lisible directement pour cette vidéo. Vous pouvez la télécharger."
+                return
+            }
+            let resume = history.entry(for: video.id)?.position ?? 0
+            detail = nil
+            playing = PlayableMedia(stream: loaded, url: url, startPosition: resume)
+        } catch {
+            streamError = error.localizedDescription
+        }
+    }
+
     // MARK: Catégories
 
     private struct CategoryCache: Codable {
@@ -634,12 +716,17 @@ final class AppState: ObservableObject {
 
     /// Ce qui est envoyé à l'API : titres et chaînes de la bibliothèque, avancement, recherches récentes.
     var tasteProfile: TasteProfile {
-        let recent = library.items
-            .sorted { ($0.lastPlayedAt ?? $0.addedAt) > ($1.lastPlayedAt ?? $1.addedAt) }
-            .prefix(30)
+        struct Seen { let title: String; let channel: String?; let percent: Int?; let date: Date }
+        var seen = library.items.map {
+            Seen(title: $0.title, channel: $0.channel, percent: $0.progress.map { Int($0 * 100) }, date: $0.lastPlayedAt ?? $0.addedAt)
+        }
+        let owned = Set(library.items.map(\.videoID))
+        seen += history.entries.filter { !owned.contains($0.video.id) }.map {
+            Seen(title: $0.video.title, channel: $0.video.channel, percent: $0.progress.map { Int($0 * 100) }, date: $0.date)
+        }
         return TasteProfile(
-            watched: recent.map { item in
-                TasteProfile.Watched(title: item.title, channel: item.channel, percent: item.progress.map { Int($0 * 100) })
+            watched: seen.sorted { $0.date > $1.date }.prefix(30).map {
+                TasteProfile.Watched(title: $0.title, channel: $0.channel, percent: $0.percent)
             },
             searches: recentSearches
         )
@@ -738,7 +825,8 @@ final class AppState: ObservableObject {
     // MARK: Détail et lecture
 
     func loadDetail(_ video: VideoSummary) async throws -> VideoDetail {
-        if let cached = detailCache[video.id] { return cached }
+        // Les liens de flux expirent : au-delà de trois heures, on redemande la fiche.
+        if let cached = detailCache[video.id], Date().timeIntervalSince(cached.fetchedAt) < 3 * 3600 { return cached }
         let detail = try await Engine.detail(for: video)
         detailCache[video.id] = detail
         return detail
@@ -747,7 +835,7 @@ final class AppState: ObservableObject {
     func play(_ item: LibraryItem) {
         if item.playable {
             detail = nil
-            playing = item
+            playing = PlayableMedia(item: item)
         } else {
             NSWorkspace.shared.open(item.mediaURL)
         }

@@ -147,7 +147,9 @@ enum Engine {
             formats: formats,
             subtitles: tracks(root["subtitles"], auto: false),
             autoSubtitles: tracks(root["automatic_captions"], auto: true),
-            chapterCount: (root["chapters"] as? [Any])?.count ?? 0
+            chapterCount: (root["chapters"] as? [Any])?.count ?? 0,
+            streamURL: ((root["formats"] as? [[String: Any]]) ?? [])
+                .first { ($0["protocol"] as? String)?.hasPrefix("m3u8") == true && $0["manifest_url"] is String }?["manifest_url"] as? String
         )
     }
 
@@ -158,7 +160,8 @@ enum Engine {
             .map { code -> SubTrack in
                 let entries = dict[code] as? [[String: Any]]
                 let name = (entries?.first?["name"] as? String) ?? Fmt.language(code)
-                return SubTrack(code: code, name: name, auto: auto)
+                let vtt = entries?.first { $0["ext"] as? String == "vtt" }?["url"] as? String
+                return SubTrack(code: code, name: name, auto: auto, url: vtt)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

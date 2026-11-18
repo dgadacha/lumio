@@ -7,6 +7,9 @@ import AppKit
 /// Le journal est écrit dans `<script>.log`.
 @MainActor
 enum DebugDriver {
+    /// Hauteur d'image du flux en cours, renseignée par le lecteur pour la commande `height`.
+    static var videoHeight = 0
+
     static func startIfRequested(_ state: AppState) {
         guard let path = ProcessInfo.processInfo.environment["LUMIO_DEBUG"],
               let script = try? String(contentsOfFile: path, encoding: .utf8) else { return }
@@ -86,11 +89,22 @@ enum DebugDriver {
                     }
                 case "play":
                     if let item = state.library.items.first { state.play(item) }
-                    log("play: \(state.playing?.title ?? "ouvert à l'extérieur ou rien")")
+                    log("play: \(state.playing?.video.title ?? "ouvert à l'extérieur ou rien")")
                 case "stop":
                     state.playing = nil
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     log("stop: position=\(state.library.items.first?.position ?? -1)")
+                case "height":
+                    log("height: \(videoHeight)p à \(argument)")
+                case "watch":
+                    // Lecture en streaming de la vidéo de la fiche ouverte, ou du premier résultat.
+                    guard let video = state.detail ?? state.results.first else { log("watch: pas de vidéo"); continue }
+                    await state.watch(video)
+                    log("watch: lecture=\(state.playing?.video.title ?? "aucune") flux=\(state.playing?.isStream ?? false) sous-titres=\(state.playing?.subtitles.map(\.code) ?? []) reprise=\(Int(state.playing?.startPosition ?? 0)) erreur=\(state.streamError ?? "aucune")")
+                case "stopstream":
+                    state.playing = nil
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    log("stopstream: position=\(state.history.entries.first?.position ?? -1) entrées=\(state.history.entries.count)")
                 case "autoupdate":
                     // Simule une vérification due : remet la date à zéro puis laisse l'app décider.
                     state.engineLastCheck = nil

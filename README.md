@@ -6,13 +6,14 @@
 
 **Un client YouTube local pour macOS, pensé comme une plateforme de streaming.**
 
-Parcourez un catalogue en rangées, téléchargez dans le format de votre choix,
-puis regardez hors ligne dans le lecteur intégré.
+Parcourez un catalogue en rangées, regardez tout de suite en streaming ou téléchargez
+dans le format de votre choix pour regarder hors ligne.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white)
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-FF5438?logo=swift&logoColor=white)
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-natif-1E1E22)
 ![Moteur yt-dlp](https://img.shields.io/badge/moteur-yt--dlp-FF5438)
+![Licence MIT](https://img.shields.io/badge/licence-MIT-1E1E22)
 
 <img src="docs/screenshots/home.jpg" alt="Accueil de Lumio : bannière à la une et rangées de vidéos">
 
@@ -25,9 +26,10 @@ puis regardez hors ligne dans le lecteur intégré.
 | **Accueil en rangées** | Une bannière « À la une », puis des rangées horizontales par thème, modifiables dans les réglages. |
 | **Catégories** | Un onglet pour explorer par thème (documentaires, histoire, musique live…) ou par chaîne (ARTE, France Culture, CNRS…). |
 | **Recherche** | Par mots-clés, ou en collant le lien d'une vidéo, d'une playlist ou d'une chaîne. |
+| **Lecture immédiate** | Un bouton « Regarder » lit la vidéo en streaming, sans rien télécharger, avec reprise là où vous vous êtes arrêté. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
-| **Lecteur intégré** | Sous-titres, vitesse de lecture, plein écran et raccourcis clavier. |
+| **Lecteur intégré** | Sous-titres, vitesse de lecture, qualité en streaming, plein écran et raccourcis clavier. |
 | **Suggestions par Claude** | En option : des rangées « Pour vous » proposées par l'IA d'après ce que vous regardez. |
 | **File d'attente** | Progression, débit, temps restant et annulation, deux téléchargements à la fois. |
 
@@ -47,7 +49,12 @@ Lumio lit les formats réellement proposés pour chaque vidéo et n'affiche que 
 | Sous-titres | Pistes manuelles et automatiques, plusieurs langues à la fois |
 | Extras | Miniature et métadonnées intégrées, chapitres, retrait des segments sponsorisés |
 
-### Regarder hors ligne
+### Regarder, en streaming ou hors ligne
+
+Le bouton **Regarder** lance la lecture immédiatement : Lumio demande à YouTube son flux adaptatif
+et le confie au lecteur système. La qualité s'ajuste au débit, jusqu'en 1080p, et se plafonne depuis
+le lecteur. Les sous-titres se chargent à la demande. Une vidéo téléchargée se lit, elle, sans
+connexion et dans la résolution choisie, 4K comprise.
 
 <img src="docs/screenshots/player.jpg" alt="Lecteur intégré avec sous-titres">
 
@@ -70,8 +77,8 @@ La fonction est **désactivée par défaut**. Pour l'activer, ouvrez **Réglages
 collez une clé API Anthropic (à créer sur [console.anthropic.com](https://console.anthropic.com)) et
 activez l'interrupteur.
 
-- **Ce qui est envoyé à l'API d'Anthropic** : les titres et chaînes de votre bibliothèque (30 au plus),
-  votre avancement dans chaque vidéo et vos recherches récentes. Rien d'autre, et rien tant que la
+- **Ce qui est envoyé à l'API d'Anthropic** : les titres et chaînes de votre bibliothèque et de votre
+  historique de lecture (30 au plus), votre avancement dans chaque vidéo et vos recherches récentes. Rien d'autre, et rien tant que la
   fonction est désactivée.
 - **La clé** est stockée dans le Trousseau de macOS. Après une recompilation, macOS peut redemander
   l'autorisation d'y accéder, car la signature locale de l'app change.
@@ -123,7 +130,7 @@ version. Les téléchargements lancés pendant une mise à jour patientent quelq
 | Quoi | Où |
 |---|---|
 | Vidéos, miniatures et sous-titres `.vtt` | `~/Movies/Lumio/` (modifiable dans les réglages) |
-| Index de la bibliothèque et cache de l'accueil | `~/Library/Application Support/Lumio/` |
+| Index de la bibliothèque, historique de lecture, caches | `~/Library/Application Support/Lumio/` |
 | Copie privée de yt-dlp | `~/Library/Application Support/Lumio/engine/` |
 
 Supprimer un titre depuis la bibliothèque déplace son dossier dans la corbeille.
@@ -143,7 +150,7 @@ pour les téléchargements.
 | `Categories.swift` | Catalogue des catégories (thèmes et chaînes), onglet et page d'une catégorie |
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |
-| `Player.swift` | Lecteur hors ligne |
+| `Player.swift` | Lecteur, pour un fichier local comme pour un flux |
 | `Settings.swift` | Réglages |
 | `Debug.swift` | Pilote de test, inactif sans la variable `LUMIO_DEBUG` |
 
@@ -151,8 +158,9 @@ L'icône est dessinée par `scripts/make-icon.swift`.
 
 ## Limites connues
 
-- **Pas de lecture en streaming.** YouTube refuse ses flux directs au lecteur système :
-  on télécharge, puis on regarde.
+- **Le streaming plafonne à 1080p.** Au-delà, YouTube ne sert que du VP9, que macOS ne lit pas :
+  pour la 4K, téléchargez. Le lien du flux expire au bout de quelques heures ; il suffit de rouvrir
+  la vidéo.
 - **Le VP9 ne se lit pas dans l'app.** macOS ne le décode pas dans ce conteneur ; ces
   fichiers s'ouvrent dans votre lecteur par défaut (VLC, IINA). La fiche le signale avant
   le téléchargement. L'AV1 demande une puce qui le décode matériellement.
@@ -168,6 +176,11 @@ L'icône est dessinée par `scripts/make-icon.swift`.
 Lumio est un outil personnel. Ne téléchargez que des contenus dont vous détenez les droits,
 qui sont sous licence libre, ou dont l'ayant droit autorise la copie, et respectez les
 conditions d'utilisation de YouTube. Lumio n'est affilié ni à YouTube ni à Google.
+
+## Licence
+
+Le code de Lumio est distribué sous [licence MIT](LICENSE). yt-dlp et FFmpeg, que Lumio appelle
+sans les inclure, restent soumis à leurs propres licences.
 
 ## Crédits
 

@@ -10,6 +10,7 @@ struct LumioApp: App {
                 .environmentObject(state)
                 .environmentObject(state.library)
                 .environmentObject(state.downloads)
+                .environmentObject(state.history)
                 .frame(minWidth: 1080, minHeight: 680)
                 .preferredColorScheme(.dark)
         }
@@ -54,9 +55,9 @@ struct RootView: View {
                     .zIndex(2)
             }
 
-            if let item = state.playing {
-                PlayerView(item: item)
-                    .id(item.id)
+            if let media = state.playing {
+                PlayerView(media: media)
+                    .id(media.id)
                     .ignoresSafeArea()
                     .transition(.opacity)
                     .zIndex(3)
@@ -64,6 +65,11 @@ struct RootView: View {
         }
         .animation(.easeOut(duration: 0.22), value: state.detail)
         .animation(.easeOut(duration: 0.25), value: state.playing)
+        .alert("Lecture impossible", isPresented: Binding(get: { state.streamError != nil }, set: { if !$0 { state.streamError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(state.streamError ?? "")
+        }
     }
 }
 

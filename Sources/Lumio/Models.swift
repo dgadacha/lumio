@@ -86,6 +86,8 @@ struct SubTrack: Codable, Hashable, Identifiable {
     let code: String
     let name: String
     let auto: Bool
+    /// Adresse du fichier WebVTT chez YouTube, pour la lecture en streaming.
+    var url: String? = nil
     var id: String { (auto ? "a:" : "m:") + code }
 }
 
@@ -98,6 +100,9 @@ struct VideoDetail {
     let subtitles: [SubTrack]
     let autoSubtitles: [SubTrack]
     let chapterCount: Int
+    /// Manifeste adaptatif (HLS) que le lecteur système lit sans téléchargement. Il expire après quelques heures.
+    var streamURL: String? = nil
+    var fetchedAt = Date()
 
     /// Flux vidéo directs (HTTP), ceux que yt-dlp privilégie.
     var videoFormats: [YTFormat] {

@@ -115,6 +115,14 @@ struct DetailOverlay: View {
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(.green)
                     }
+                } else {
+                    HStack(spacing: 12) {
+                        WatchButton(video: detail?.summary ?? video)
+                        Text("Lecture immédiate, sans téléchargement (1080p au plus)")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .shadow(color: .black.opacity(0.7), radius: 4)
+                    }
                 }
             }
             .padding(.horizontal, 40)

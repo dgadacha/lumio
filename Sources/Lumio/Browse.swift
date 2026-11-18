@@ -172,7 +172,7 @@ struct CardFactory {
             images: video.cardImages,
             duration: video.duration,
             badge: owned == nil ? nil : "Hors ligne",
-            progress: owned?.progress,
+            progress: owned?.progress ?? state.history.entry(for: video.id)?.progress,
             action: { state.detail = video }
         )
     }
@@ -196,6 +196,7 @@ struct CardFactory {
 struct HomeView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
+    @EnvironmentObject var history: WatchHistory
 
     var body: some View {
         let factory = CardFactory(state: state, library: library)
@@ -213,6 +214,9 @@ struct HomeView: View {
 
                 if !library.continueWatching.isEmpty {
                     Shelf(title: "Reprendre la lecture", cards: library.continueWatching.map(factory.card))
+                }
+                if !history.entries.isEmpty {
+                    Shelf(title: "Vus récemment en streaming", cards: history.entries.prefix(20).map { factory.card($0.video) })
                 }
                 if !library.items.isEmpty {
                     Shelf(title: "Disponibles hors ligne", cards: library.items.prefix(20).map(factory.card))
@@ -294,13 +298,10 @@ struct HeroView: View {
                         }
                         .buttonStyle(PrimaryButtonStyle())
                     } else {
-                        Button { state.detail = video } label: {
-                            Label("Télécharger", systemImage: "arrow.down.to.line")
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
+                        WatchButton(video: video)
                     }
                     Button { state.detail = video } label: {
-                        Label("Plus d'infos", systemImage: "info.circle")
+                        Label("Télécharger et infos", systemImage: "arrow.down.to.line")
                     }
                     .buttonStyle(PrimaryButtonStyle(fill: Color.white.opacity(0.24), text: .white))
                 }
@@ -312,6 +313,30 @@ struct HeroView: View {
         }
         .frame(height: 540)
         .clipped()
+    }
+}
+
+/// Bouton « Regarder » : prépare le flux puis ouvre le lecteur, sans rien télécharger.
+struct WatchButton: View {
+    let video: VideoSummary
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var history: WatchHistory
+
+    var body: some View {
+        let loading = state.streamLoading == video.id
+        let resume = history.entry(for: video.id)?.progress != nil
+        Button { Task { await state.watch(video) } } label: {
+            HStack(spacing: 8) {
+                if loading {
+                    ProgressView().controlSize(.small).tint(.black)
+                } else {
+                    Image(systemName: "play.fill")
+                }
+                Text(loading ? "Préparation…" : (resume ? "Reprendre" : "Regarder"))
+            }
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        .disabled(state.streamLoading != nil || state.engine.path == nil)
     }
 }
 

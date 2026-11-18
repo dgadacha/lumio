@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
+    @EnvironmentObject var history: WatchHistory
     @AppStorage("downloadDir") private var downloadDir = ""
     @AppStorage("defaultHeight") private var defaultHeight = 1080
     @State private var rowsText = ""
@@ -35,6 +36,21 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+            }
+
+            card("Historique de lecture") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(state.history.entries.isEmpty ? "Aucune vidéo regardée en streaming"
+                             : "\(state.history.entries.count) vidéo(s) regardée(s) en streaming")
+                            .font(.system(size: 13.5, weight: .semibold))
+                        Text("Sert à reprendre la lecture là où vous vous êtes arrêté. Reste sur ce Mac.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    }
+                    Spacer()
+                    Button("Effacer l'historique") { state.history.clear() }
+                        .disabled(state.history.entries.isEmpty)
                 }
             }
 
@@ -107,7 +123,7 @@ struct SettingsView: View {
                     Text(state.aiBusy ? "Claude réfléchit…" : (state.aiError ?? keyMessage))
                         .font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(2)
                 }
-                Text("Désactivé par défaut. Une fois activé, les titres et chaînes de votre bibliothèque, votre avancement et vos recherches récentes sont envoyés à l'API d'Anthropic (modèle \(ClaudeClient.model)), facturée sur votre clé. Lumio ne rappelle l'API que si votre historique change, au plus une fois par heure. Clé à créer sur console.anthropic.com.")
+                Text("Désactivé par défaut. Une fois activé, les titres et chaînes de votre bibliothèque et de votre historique de lecture, votre avancement et vos recherches récentes sont envoyés à l'API d'Anthropic (modèle \(ClaudeClient.model)), facturée sur votre clé. Lumio ne rappelle l'API que si votre historique change, au plus une fois par heure. Clé à créer sur console.anthropic.com.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.faint)
             }
