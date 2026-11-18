@@ -110,6 +110,29 @@ enum DebugDriver {
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         log("cancel: état=\(job.state) dossier présent=\(FileManager.default.fileExists(atPath: folder.path))")
                     } else { log("cancel: aucun téléchargement actif") }
+                case "keychain":
+                    // Aller-retour dans le Trousseau avec une valeur factice ; seul le résultat est journalisé.
+                    let had = UserDefaults.standard.bool(forKey: "aiKeySaved")
+                    if had {
+                        log("keychain: une clé existe déjà, test ignoré pour ne pas l'écraser")
+                    } else {
+                        let probe = "valeur-factice-\(UUID().uuidString)"
+                        let saved = APIKeyStore.save(probe)
+                        let matches = APIKeyStore.load() == probe
+                        APIKeyStore.delete()
+                        log("keychain: écriture=\(saved) relecture identique=\(matches) supprimée=\(APIKeyStore.load() == nil)")
+                    }
+                case "ai":
+                    // Force une actualisation des suggestions. La clé n'est jamais journalisée.
+                    state.aiEnabled = true
+                    let profile = state.tasteProfile
+                    log("ai: profil=\(profile.watched.count) titres, \(profile.searches.count) recherches, clé=\(APIKeyStore.hasKey)")
+                    await state.refreshSuggestions(force: true)
+                    while state.aiBusy { try? await Task.sleep(nanoseconds: 300_000_000) }
+                    log("ai: erreur=\(state.aiError ?? "aucune")")
+                    for row in state.aiRows {
+                        log("ai rangée: \(row.title) | \(row.query) | \(row.items.count) vidéos | \(row.reason ?? "")")
+                    }
                 case "quit":
                     NSApp.terminate(nil)
                 default:

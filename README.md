@@ -27,6 +27,7 @@ puis regardez hors ligne dans le lecteur intégré.
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
 | **Lecteur intégré** | Sous-titres, vitesse de lecture, plein écran et raccourcis clavier. |
+| **Suggestions par Claude** | En option : des rangées « Pour vous » proposées par l'IA d'après ce que vous regardez. |
 | **File d'attente** | Progression, débit, temps restant et annulation, deux téléchargements à la fois. |
 
 ### Choisir le format, la résolution et les sous-titres
@@ -58,6 +59,24 @@ Lumio lit les formats réellement proposés pour chaque vidéo et n'affiche que 
 | `Échap` | Quitter le plein écran, puis le lecteur |
 
 <img src="docs/screenshots/library.jpg" alt="Bibliothèque hors ligne">
+
+### Suggestions par Claude (en option)
+
+Lumio peut demander à [Claude](https://www.anthropic.com/claude) trois rangées « Pour vous » : deux qui
+prolongent vos goûts, une découverte. Chaque rangée indique pourquoi elle vous est proposée.
+
+La fonction est **désactivée par défaut**. Pour l'activer, ouvrez **Réglages → Suggestions par Claude**,
+collez une clé API Anthropic (à créer sur [console.anthropic.com](https://console.anthropic.com)) et
+activez l'interrupteur.
+
+- **Ce qui est envoyé à l'API d'Anthropic** : les titres et chaînes de votre bibliothèque (30 au plus),
+  votre avancement dans chaque vidéo et vos recherches récentes. Rien d'autre, et rien tant que la
+  fonction est désactivée.
+- **La clé** est stockée dans le Trousseau de macOS. Après une recompilation, macOS peut redemander
+  l'autorisation d'y accéder, car la signature locale de l'app change.
+- **Le coût** est facturé sur votre clé. Lumio ne rappelle l'API que si la liste de vos vidéos ou de vos recherches a changé,
+  au plus une fois par heure, ou quand vous cliquez sur « Actualiser les suggestions ».
+- Claude propose des recherches, pas des vidéos : c'est yt-dlp qui remplit ensuite chaque rangée.
 
 ## Installation
 
@@ -116,6 +135,7 @@ pour les téléchargements.
 |---|---|
 | `Engine.swift` | Appels yt-dlp (recherche, formats, mise à jour du moteur) et lecture des sous-titres WebVTT |
 | `Models.swift` | Modèles, et traduction des options en arguments yt-dlp |
+| `Claude.swift` | Appel à l'API Claude (sortie JSON structurée) et stockage de la clé dans le Trousseau |
 | `Stores.swift` | Bibliothèque, file de téléchargements, état de l'app |
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |

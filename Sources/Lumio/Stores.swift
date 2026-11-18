@@ -333,8 +333,19 @@ final class AppState: ObservableObject {
     @Published var engineBusy = false
     @Published var engineLog = ""
 
+    @Published var aiRows: [HomeRow] = []
+    @Published var aiBusy = false
+    @Published var aiError: String?
+    @Published var aiEnabled = UserDefaults.standard.bool(forKey: "aiEnabled") {
+        didSet {
+            UserDefaults.standard.set(aiEnabled, forKey: "aiEnabled")
+            if aiEnabled { Task { await refreshSuggestions(force: false) } }
+        }
+    }
+
     let library: Library
     let downloads: DownloadManager
+    private let aiCacheFile = Paths.support.appendingPathComponent("suggestions.json")
     private var detailCache: [String: VideoDetail] = [:]
     private var searchToken = 0
     private let homeCache = Paths.support.appendingPathComponent("home.json")
@@ -357,7 +368,9 @@ final class AppState: ObservableObject {
         Task {
             await refreshEngine()
             await loadHome(force: false)
+            await refreshSuggestions(force: false)
         }
+        loadCachedSuggestions()
         DebugDriver.startIfRequested(self)
     }
 
@@ -469,6 +482,81 @@ final class AppState: ObservableObject {
         } else if let data = try? JSONEncoder().encode(HomeCache(date: Date(), config: rowsConfig, rows: rows)) {
             try? data.write(to: homeCache, options: .atomic)
         }
+    }
+
+    // MARK: Suggestions par Claude
+
+    private struct SuggestionCache: Codable {
+        let date: Date
+        let fingerprint: String
+        let rows: [HomeRow]
+    }
+
+    /// Ce qui est envoyé à l'API : titres et chaînes de la bibliothèque, avancement, recherches récentes.
+    var tasteProfile: TasteProfile {
+        let recent = library.items
+            .sorted { ($0.lastPlayedAt ?? $0.addedAt) > ($1.lastPlayedAt ?? $1.addedAt) }
+            .prefix(30)
+        return TasteProfile(
+            watched: recent.map { item in
+                TasteProfile.Watched(title: item.title, channel: item.channel, percent: item.progress.map { Int($0 * 100) })
+            },
+            searches: recentSearches
+        )
+    }
+
+    private func readSuggestionCache() -> SuggestionCache? {
+        guard let data = try? Data(contentsOf: aiCacheFile) else { return nil }
+        return try? JSONDecoder().decode(SuggestionCache.self, from: data)
+    }
+
+    private func loadCachedSuggestions() {
+        guard aiEnabled, let cache = readSuggestionCache() else { return }
+        aiRows = cache.rows
+    }
+
+    /// Interroge Claude seulement si l'historique a changé (et au plus une fois par heure),
+    /// sauf demande explicite : chaque appel est facturé sur la clé de l'utilisateur.
+    func refreshSuggestions(force: Bool) async {
+        guard aiEnabled, !aiBusy, APIKeyStore.hasKey, engine.path != nil else { return }
+        let profile = tasteProfile
+        guard !profile.isEmpty else {
+            aiError = "Téléchargez ou cherchez quelques vidéos d'abord : Claude n'a encore rien pour vous connaître."
+            return
+        }
+        if !force, let cache = readSuggestionCache(),
+           cache.fingerprint == profile.fingerprint || Date().timeIntervalSince(cache.date) < 3600 {
+            // Rien de neuf : on réaffiche les suggestions déjà obtenues, sans appel.
+            if aiRows.isEmpty { aiRows = cache.rows }
+            aiError = nil
+            return
+        }
+        aiBusy = true
+        aiError = nil
+        defer { aiBusy = false }
+        do {
+            let suggestions = try await ClaudeClient.suggest(for: profile)
+            var rows: [HomeRow] = []
+            for suggestion in suggestions {
+                guard let items = try? await Engine.search(suggestion.query, limit: 18), !items.isEmpty else { continue }
+                rows.append(HomeRow(title: suggestion.title, query: suggestion.query, items: items, reason: suggestion.reason))
+                aiRows = rows
+            }
+            guard !rows.isEmpty else {
+                aiError = "Les suggestions de Claude n'ont donné aucun résultat."
+                return
+            }
+            let cache = SuggestionCache(date: Date(), fingerprint: profile.fingerprint, rows: rows)
+            if let data = try? JSONEncoder().encode(cache) { try? data.write(to: aiCacheFile, options: .atomic) }
+        } catch {
+            aiError = error.localizedDescription
+        }
+    }
+
+    func clearSuggestions() {
+        aiRows = []
+        aiError = nil
+        try? FileManager.default.removeItem(at: aiCacheFile)
     }
 
     // MARK: Recherche

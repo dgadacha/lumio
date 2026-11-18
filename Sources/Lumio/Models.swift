@@ -32,6 +32,8 @@ struct HomeRow: Codable, Identifiable, Hashable {
     let title: String
     let query: String
     var items: [VideoSummary]
+    /// Pour les rangées suggérées par Claude : pourquoi elle est proposée.
+    var reason: String? = nil
 }
 
 enum VCodec: String, Codable, CaseIterable, Hashable {

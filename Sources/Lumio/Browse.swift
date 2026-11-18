@@ -97,15 +97,26 @@ struct VideoCard: View {
 
 struct Shelf: View {
     let title: String
+    var subtitle: String? = nil
+    var suggested = false
     let cards: [CardData]
     @State private var position: String?
     @State private var hover = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 19, weight: .bold))
-                .padding(.horizontal, 48)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    if suggested {
+                        Image(systemName: "sparkles").foregroundStyle(Theme.accent).font(.system(size: 15, weight: .bold))
+                    }
+                    Text(title).font(.system(size: 19, weight: .bold))
+                }
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle).font(.system(size: 12.5)).foregroundStyle(Theme.dim).lineLimit(2)
+                }
+            }
+            .padding(.horizontal, 48)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
@@ -205,6 +216,24 @@ struct HomeView: View {
                 }
                 if !library.items.isEmpty {
                     Shelf(title: "Disponibles hors ligne", cards: library.items.prefix(20).map(factory.card))
+                }
+
+                if state.aiEnabled {
+                    ForEach(state.aiRows) { row in
+                        Shelf(title: row.title, subtitle: row.reason, suggested: true, cards: row.items.map(factory.card))
+                    }
+                    if state.aiBusy {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Claude prépare vos suggestions…").font(.system(size: 13)).foregroundStyle(Theme.dim)
+                        }
+                        .padding(.horizontal, 48)
+                    } else if let error = state.aiError {
+                        Label(error, systemImage: "sparkles")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.dim)
+                            .padding(.horizontal, 48)
+                    }
                 }
 
                 ForEach(state.rows) { row in

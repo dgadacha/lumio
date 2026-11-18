@@ -6,6 +6,9 @@ struct SettingsView: View {
     @AppStorage("downloadDir") private var downloadDir = ""
     @AppStorage("defaultHeight") private var defaultHeight = 1080
     @State private var rowsText = ""
+    @State private var keyDraft = ""
+    @State private var keySaved = APIKeyStore.hasKey
+    @State private var keyMessage = ""
 
     var body: some View {
         PageScaffold(title: "Réglages") {
@@ -53,6 +56,48 @@ struct SettingsView: View {
                         .disabled(state.engineBusy)
                 }
                 Text("Lumio installe sa propre copie de yt-dlp dans son dossier de données, sans toucher au reste du système. ffmpeg doit être présent (Homebrew).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.faint)
+            }
+
+            card("Suggestions par Claude") {
+                Toggle(isOn: $state.aiEnabled) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Rangées « Pour vous » sur l'accueil").font(.system(size: 13.5, weight: .semibold))
+                        Text("Claude propose trois rangées d'après votre bibliothèque et vos recherches.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    }
+                }
+                .toggleStyle(.switch)
+                Divider().overlay(Color.white.opacity(0.1))
+                HStack(spacing: 8) {
+                    SecureField(keySaved ? "Clé enregistrée dans le Trousseau" : "Clé API Anthropic (sk-ant-…)", text: $keyDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Enregistrer") {
+                        let key = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        keySaved = APIKeyStore.save(key)
+                        keyMessage = keySaved ? "Clé enregistrée dans le Trousseau." : "Impossible d'écrire dans le Trousseau."
+                        keyDraft = ""
+                        if keySaved { Task { await state.refreshSuggestions(force: true) } }
+                    }
+                    .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if keySaved {
+                        Button("Supprimer") {
+                            APIKeyStore.delete()
+                            state.clearSuggestions()
+                            keySaved = APIKeyStore.hasKey
+                            keyMessage = "Clé supprimée."
+                        }
+                    }
+                }
+                HStack(spacing: 10) {
+                    Button("Actualiser les suggestions") { Task { await state.refreshSuggestions(force: true) } }
+                        .disabled(!state.aiEnabled || !keySaved || state.aiBusy)
+                    if state.aiBusy { ProgressView().controlSize(.small) }
+                    Text(state.aiBusy ? "Claude réfléchit…" : (state.aiError ?? keyMessage))
+                        .font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(2)
+                }
+                Text("Désactivé par défaut. Une fois activé, les titres et chaînes de votre bibliothèque, votre avancement et vos recherches récentes sont envoyés à l'API d'Anthropic (modèle \(ClaudeClient.model)), facturée sur votre clé. Lumio ne rappelle l'API que si votre historique change, au plus une fois par heure. Clé à créer sur console.anthropic.com.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.faint)
             }
