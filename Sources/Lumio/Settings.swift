@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
     @EnvironmentObject var history: WatchHistory
+    @EnvironmentObject var local: LocalLibrary
     @AppStorage("downloadDir") private var downloadDir = ""
     @AppStorage("defaultHeight") private var defaultHeight = 1080
     @State private var rowsText = ""
@@ -36,6 +37,31 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+            }
+
+            card("Films et séries du disque") {
+                Text("Dossiers analysés pour l'onglet Films et séries. Lumio ne fait que lire : vos fichiers ne sont ni déplacés, ni renommés, ni supprimés.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                VStack(spacing: 6) {
+                    ForEach(local.folders, id: \.self) { folder in
+                        HStack {
+                            Image(systemName: "folder.fill").foregroundStyle(Theme.dim)
+                            Text(folder).font(.system(size: 12.5)).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button { local.folders.removeAll { $0 == folder } } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain).foregroundStyle(Theme.dim)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+                HStack {
+                    Button("Ajouter un dossier…") { addScanFolder() }
+                    Button("Rétablir par défaut") { local.folders = LocalLibrary.defaultFolders }
+                    Spacer()
+                    if local.scanning { ProgressView().controlSize(.small) }
+                    Button("Analyser maintenant") { Task { await local.scan() } }.disabled(local.scanning)
                 }
             }
 
@@ -151,6 +177,17 @@ struct SettingsView: View {
             }
         }
         .onAppear { rowsText = state.rowsConfig }
+    }
+
+    private func addScanFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Ajouter"
+        if panel.runModal() == .OK {
+            for url in panel.urls where !local.folders.contains(url.path) { local.folders.append(url.path) }
+        }
     }
 
     private func chooseFolder() {

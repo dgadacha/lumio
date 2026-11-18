@@ -373,7 +373,7 @@ final class DownloadManager: ObservableObject {
 
 @MainActor
 final class AppState: ObservableObject {
-    enum Tab: Hashable { case home, categories, search, library, downloads, settings }
+    enum Tab: Hashable { case home, categories, local, search, library, downloads, settings }
 
     @Published var tab: Tab = .home
     @Published var rows: [HomeRow] = []
@@ -392,6 +392,12 @@ final class AppState: ObservableObject {
     /// Identifiant de la vidéo dont le flux est en cours de préparation.
     @Published var streamLoading: String?
     @Published var streamError: String?
+    /// Série du disque dont la page est ouverte.
+    @Published var localSeries: LocalSeries?
+    /// Chemin du fichier local en cours de préparation à la lecture.
+    @Published var localPreparing: String?
+    private var localProcess: Process?
+    private var localCancelled = false
 
     @Published var engine = EngineInfo()
     @Published var engineChecked = false
@@ -431,6 +437,7 @@ final class AppState: ObservableObject {
     let library: Library
     let downloads: DownloadManager
     let history = WatchHistory()
+    let local = LocalLibrary()
     private let aiCacheFile = Paths.support.appendingPathComponent("suggestions.json")
     private var detailCache: [String: VideoDetail] = [:]
     private var searchToken = 0
@@ -636,6 +643,49 @@ final class AppState: ObservableObject {
         } catch {
             streamError = error.localizedDescription
         }
+    }
+
+    // MARK: Films et séries du disque
+
+    /// Lit un film ou un épisode trouvé sur le disque. Un fichier que le lecteur système ne lit pas
+    /// tel quel (MKV) est d'abord recopié dans un MP4 temporaire, sans réencodage : une à deux secondes.
+    func playLocal(path: String) async {
+        guard localPreparing == nil else { return }
+        localPreparing = path
+        localCancelled = false
+        streamError = nil
+        defer { localPreparing = nil; localProcess = nil }
+
+        var title = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        var detailLine = "Fichier local"
+        if let series = local.catalog.series.first(where: { $0.episodes.contains { $0.path == path } }),
+           let episode = series.episodes.first(where: { $0.path == path }) {
+            title = series.title
+            detailLine = "S\(episode.season) : É\(episode.number)" + (episode.title.map { " · \($0)" } ?? "")
+        } else if let movie = local.catalog.movies.first(where: { $0.path == path }) {
+            title = movie.title
+            detailLine = movie.year.map(String.init) ?? "Film"
+        }
+        do {
+            let prepared = try await MediaPreparer.prepare(path) { process in
+                DispatchQueue.main.async { self.localProcess = process }
+            }
+            guard !localCancelled else { return }
+            let saved = local.position(for: path)
+            let resume = saved.map { $0.finished ? 0 : $0.position } ?? 0
+            detail = nil
+            playing = PlayableMedia(localPath: path, title: title, detailLine: detailLine, prepared: prepared,
+                                    startPosition: resume, nextPath: local.episode(after: path)?.episode.path)
+        } catch {
+            // Une annulation arrête ffmpeg, qui renvoie alors une erreur : ce n'en est pas une pour l'utilisateur.
+            if !localCancelled { streamError = error.localizedDescription }
+        }
+    }
+
+    func cancelLocalPreparation() {
+        guard localPreparing != nil else { return }
+        localCancelled = true
+        localProcess?.terminate()
     }
 
     // MARK: Catégories

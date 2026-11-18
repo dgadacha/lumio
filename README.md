@@ -2,7 +2,7 @@
 
 <img src="docs/icon.png" width="128" alt="Icône de Lumio">
 
-# Lumio
+<h1><img src="docs/wordmark.png" width="340" alt="Lumio"></h1>
 
 **Un client YouTube local pour macOS, pensé comme une plateforme de streaming.**
 
@@ -10,9 +10,9 @@ Parcourez un catalogue en rangées, regardez tout de suite en streaming ou tél�
 dans le format de votre choix pour regarder hors ligne.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white)
-![Swift 5.9](https://img.shields.io/badge/Swift-5.9-FF5438?logo=swift&logoColor=white)
+![Swift 5.9](https://img.shields.io/badge/Swift-5.9-FA3C20?logo=swift&logoColor=white)
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-natif-1E1E22)
-![Moteur yt-dlp](https://img.shields.io/badge/moteur-yt--dlp-FF5438)
+![Moteur yt-dlp](https://img.shields.io/badge/moteur-yt--dlp-FA3C20)
 ![Licence MIT](https://img.shields.io/badge/licence-MIT-1E1E22)
 
 <img src="docs/screenshots/home.jpg" alt="Accueil de Lumio : bannière à la une et rangées de vidéos">
@@ -26,6 +26,7 @@ dans le format de votre choix pour regarder hors ligne.
 | **Accueil en rangées** | Une bannière « À la une », puis des rangées horizontales par thème, modifiables dans les réglages. |
 | **Catégories** | Un onglet pour explorer par thème (documentaires, histoire, musique live…) ou par chaîne (ARTE, France Culture, CNRS…). |
 | **Recherche** | Par mots-clés, ou en collant le lien d'une vidéo, d'une playlist ou d'une chaîne. |
+| **Films et séries du disque** | Lumio analyse vos dossiers, range vos fichiers par série et par saison, et les lit, MKV compris. |
 | **Lecture immédiate** | Un bouton « Regarder » lit la vidéo en streaming, sans rien télécharger, avec reprise là où vous vous êtes arrêté. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
@@ -86,6 +87,27 @@ activez l'interrupteur.
   au plus une fois par heure, ou quand vous cliquez sur « Actualiser les suggestions ».
 - Claude propose des recherches, pas des vidéos : c'est yt-dlp qui remplit ensuite chaque rangée.
 
+### Films et séries déjà sur votre disque
+
+L'onglet **Films et séries** présente les vidéos que vous possédez déjà, rangées comme sur une
+plateforme : une page par série, ses saisons, la liste des épisodes avec vignette, durée et
+progression, un bouton « Reprendre » et l'épisode suivant dans le lecteur.
+
+- **Analyse** : Lumio parcourt les dossiers Téléchargements et Vidéos, plus ceux que vous ajoutez dans
+  les réglages. Il reconnaît les épisodes d'après leur nom (`S01E02`, `1x02`, dossier « Saison 1 »…),
+  regroupe les doublons et ignore les vidéos personnelles (photos, captures d'écran).
+- **Lecture seule** : vos fichiers ne sont jamais déplacés, renommés ni supprimés.
+- **Lecture des MKV** : macOS ne lit pas ce format. Lumio recopie donc l'épisode dans un fichier
+  temporaire lisible, sans réencoder la vidéo, ce qui prend une à deux secondes. Les deux dernières
+  copies sont gardées dans le cache, les autres sont effacées.
+- **Pistes audio et sous-titres** : le lecteur propose les langues du fichier (version originale,
+  version française…) et ses sous-titres texte. Les sous-titres en image (PGS, VobSub) ne sont pas
+  pris en charge.
+- **Vignettes** : elles sont tirées des fichiers eux-mêmes, ou de l'affiche qu'ils contiennent.
+  Aucune information n'est demandée à un service en ligne, et rien de cet onglet n'est envoyé à Claude.
+
+Au premier accès, macOS demande d'autoriser Lumio à lire le dossier Téléchargements.
+
 ## Installation
 
 ### Prérequis
@@ -131,6 +153,7 @@ version. Les téléchargements lancés pendant une mise à jour patientent quelq
 |---|---|
 | Vidéos, miniatures et sous-titres `.vtt` | `~/Movies/Lumio/` (modifiable dans les réglages) |
 | Index de la bibliothèque, historique de lecture, caches | `~/Library/Application Support/Lumio/` |
+| Copies temporaires des MKV, vignettes et sous-titres extraits | `~/Library/Caches/Lumio/` |
 | Copie privée de yt-dlp | `~/Library/Application Support/Lumio/engine/` |
 
 Supprimer un titre depuis la bibliothèque déplace son dossier dans la corbeille.
@@ -150,6 +173,9 @@ pour les téléchargements.
 | `Categories.swift` | Catalogue des catégories (thèmes et chaînes), onglet et page d'une catégorie |
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |
+| `MediaParser.swift` | Classement des fichiers en séries, saisons, épisodes et films, d'après leur nom |
+| `LocalMedia.swift` | Analyse des dossiers, préparation à la lecture (ffmpeg), vignettes, positions |
+| `LocalViews.swift` | Onglet Films et séries, page d'une série |
 | `Player.swift` | Lecteur, pour un fichier local comme pour un flux |
 | `Settings.swift` | Réglages |
 | `Debug.swift` | Pilote de test, inactif sans la variable `LUMIO_DEBUG` |

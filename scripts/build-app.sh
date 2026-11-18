@@ -13,6 +13,7 @@ cp .build/release/Lumio "$APP/Contents/MacOS/Lumio"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 [ -f Resources/AppIcon.icns ] || swift scripts/make-icon.swift
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/Wordmark.png "$APP/Contents/Resources/Wordmark.png"
 codesign --force --sign - "$APP" >/dev/null 2>&1
 
 echo "OK : $APP"

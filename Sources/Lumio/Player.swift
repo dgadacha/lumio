@@ -21,10 +21,27 @@ struct PlayableMedia: Identifiable, Hashable {
     let images: [URL]
     let subtitles: [PlayerSubtitle]
     let startPosition: Double
-    /// Renseigné pour un fichier de la bibliothèque ; nul pour un flux.
-    let libraryID: UUID?
+    let source: Source
 
-    var isStream: Bool { libraryID == nil }
+    /// D'où vient ce qui est lu : cela décide des menus affichés et de l'endroit où la position est mémorisée.
+    enum Source: Hashable {
+        /// Téléchargé par Lumio.
+        case library(UUID)
+        /// Flux YouTube lu sans téléchargement.
+        case stream
+        /// Film ou épisode trouvé sur le disque ; `path` est le fichier d'origine, jamais la copie temporaire.
+        case local(path: String, nextPath: String?)
+    }
+
+    var isStream: Bool { source == .stream }
+    var localPath: String? {
+        if case .local(let path, _) = source { return path }
+        return nil
+    }
+    var nextLocalPath: String? {
+        if case .local(_, let next) = source { return next }
+        return nil
+    }
 
     init(item: LibraryItem) {
         id = item.id.uuidString
@@ -38,7 +55,21 @@ struct PlayableMedia: Identifiable, Hashable {
             PlayerSubtitle(code: $0.code, label: Fmt.language($0.code), url: item.folderURL.appendingPathComponent($0.file))
         }
         startPosition = item.position
-        libraryID = item.id
+        source = .library(item.id)
+    }
+
+    /// Film ou épisode du disque, une fois rendu lisible par `MediaPreparer`.
+    init(localPath: String, title: String, detailLine: String, prepared: PreparedMedia, startPosition: Double, nextPath: String?) {
+        id = "local-\(LocalTools.fingerprint(localPath))"
+        video = VideoSummary(id: id, title: title, channel: nil, duration: prepared.duration > 0 ? prepared.duration : nil,
+                             viewCount: nil, thumbnail: nil)
+        self.detailLine = detailLine
+        url = prepared.playURL
+        kind = .video
+        images = []
+        subtitles = prepared.subtitles
+        self.startPosition = startPosition
+        source = .local(path: localPath, nextPath: nextPath)
     }
 
     init(stream detail: VideoDetail, url: URL, startPosition: Double) {
@@ -65,8 +96,15 @@ struct PlayableMedia: Identifiable, Hashable {
             return PlayerSubtitle(code: track.code, label: label, url: remote)
         }
         self.startPosition = startPosition
-        libraryID = nil
+        source = .stream
     }
+}
+
+/// Piste audio d'un fichier (version originale, version française…).
+struct AudioChoice: Identifiable, Hashable {
+    let id: Int
+    let label: String
+    let language: String?
 }
 
 // MARK: - Modèle du lecteur
@@ -90,6 +128,9 @@ final class PlayerModel: ObservableObject {
     @Published var controlsVisible = true
     @Published var failed: String?
     @Published var notice: String?
+    @Published var audioChoices: [AudioChoice] = []
+    @Published var audioChoice: Int?
+    private var audioGroup: AVMediaSelectionGroup?
 
     var onClose: () -> Void = {}
     private var cues: [Cue] = []
@@ -116,6 +157,7 @@ final class PlayerModel: ObservableObject {
             if let loaded = try? await asset.load(.duration), loaded.seconds.isFinite, loaded.seconds > 0 {
                 duration = loaded.seconds
             }
+            await loadAudioChoices(asset: asset)
         }
         statusObserver = playerItem.observe(\.status) { [weak self] observed, _ in
             guard observed.status == .failed else { return }
@@ -134,15 +176,32 @@ final class PlayerModel: ObservableObject {
             player.seek(to: CMTime(seconds: media.startPosition, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             time = media.startPosition
         }
-        // La langue mémorisée n'est rechargée d'office que pour un fichier local : en streaming,
+        // La langue mémorisée n'est rechargée d'office que pour un fichier sur disque : en streaming,
         // chaque piste est une requête à YouTube, faite seulement à la demande.
-        if !media.isStream, let preferred = UserDefaults.standard.string(forKey: "subtitleLanguage"),
-           let match = media.subtitles.first(where: { $0.code == preferred }) {
+        if media.localPath != nil {
+            // Fichier du disque : on retrouve la piste par son libellé (« Français — Complets »),
+            // identique d'un épisode à l'autre d'une même série.
+            if let label = UserDefaults.standard.string(forKey: "localSubtitleLabel"),
+               let match = media.subtitles.first(where: { $0.label == label }) {
+                select(subtitle: match, remember: false)
+            }
+        } else if !media.isStream, let preferred = UserDefaults.standard.string(forKey: "subtitleLanguage"),
+                  let match = media.subtitles.first(where: { $0.code == preferred }) {
             select(subtitle: match, remember: false)
         }
         player.play()
         isPlaying = true
         pokeControls()
+        DebugDriver.playerReport = { [weak self] in
+            guard let self else { return "lecteur fermé" }
+            let item = self.playerItem
+            return "statut=\(item.status.rawValue) temps=\(self.time) durée=\(self.duration) brut=\(self.player.currentTime().seconds) "
+                + "image=\(Int(item.presentationSize.width))x\(Int(item.presentationSize.height)) contrôle=\(self.player.timeControlStatus.rawValue) "
+                + "attente=\(self.player.reasonForWaitingToPlay?.rawValue ?? "-") échec=\(self.failed ?? "aucun") "
+                + "erreur=\(item.error?.localizedDescription ?? "aucune") journal=\(item.errorLog()?.events.last?.errorComment ?? "-") reprise=\(self.media.startPosition) "
+                + "détail=\((item.error as NSError?).map { "\($0.domain) \($0.code) sous-jacente=\(($0.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain) \($0.code)" } ?? "-") raison=\($0.localizedFailureReason ?? "-")" } ?? "-") "
+                + "audio=\(self.audioChoices.map(\.label)) choisie=\(self.audioChoice.map(String.init) ?? "-") fichier=\(self.media.url.lastPathComponent)"
+        }
     }
 
     private func tick(_ seconds: Double) {
@@ -215,7 +274,14 @@ final class PlayerModel: ObservableObject {
         subtitle = track
         caption = ""
         cues = []
-        if remember { UserDefaults.standard.set(track?.code, forKey: "subtitleLanguage") }
+        if remember {
+            // Les fichiers du disque ont leur propre préférence, pour ne pas écraser celle des vidéos YouTube.
+            if media.localPath != nil {
+                UserDefaults.standard.set(track?.label, forKey: "localSubtitleLabel")
+            } else {
+                UserDefaults.standard.set(track?.code, forKey: "subtitleLanguage")
+            }
+        }
         guard let track else { return }
         if track.url.isFileURL {
             if let text = try? String(contentsOf: track.url, encoding: .utf8) { cues = VTT.parse(text) }
@@ -241,6 +307,40 @@ final class PlayerModel: ObservableObject {
         notice = text
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
             if self?.notice == text { self?.notice = nil }
+        }
+    }
+
+    /// Liste les pistes audio et rétablit la langue choisie la dernière fois.
+    private func loadAudioChoices(asset: AVURLAsset) async {
+        guard let group = try? await asset.loadMediaSelectionGroup(for: .audible), group.options.count > 1 else { return }
+        audioGroup = group
+        audioChoices = group.options.enumerated().map { index, option in
+            AudioChoice(id: index, label: option.displayName, language: option.extendedLanguageTag ?? option.locale?.identifier)
+        }
+        let preferred = UserDefaults.standard.string(forKey: "audioLanguage")
+        if let preferred, let match = audioChoices.first(where: { Self.sameLanguage($0.language, preferred) }) {
+            select(audio: match.id, remember: false)
+        } else if let current = playerItem.currentMediaSelection.selectedMediaOption(in: group),
+                  let index = group.options.firstIndex(of: current) {
+            audioChoice = index
+        } else {
+            audioChoice = 0
+        }
+    }
+
+    /// « fre », « fra » et « fr » désignent la même langue.
+    private static func sameLanguage(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return false }
+        let fold: (String) -> String = { Locale(identifier: $0).language.languageCode?.identifier ?? String($0.prefix(2)).lowercased() }
+        return fold(a) == fold(b)
+    }
+
+    func select(audio index: Int, remember: Bool = true) {
+        guard let group = audioGroup, group.options.indices.contains(index) else { return }
+        playerItem.select(group.options[index], in: group)
+        audioChoice = index
+        if remember, let language = audioChoices.first(where: { $0.id == index })?.language {
+            UserDefaults.standard.set(language, forKey: "audioLanguage")
         }
     }
 
@@ -349,9 +449,11 @@ struct PlayerView: View {
                                message: "\(failed)\nLe lien fourni par YouTube a peut-être expiré : rouvrez la vidéo, ou téléchargez-la.",
                                actionTitle: "Fermer") { close() }
                 } else {
-                    EmptyState(symbol: "exclamationmark.triangle", title: "Lecture impossible", message: failed,
+                    EmptyState(symbol: "exclamationmark.triangle", title: "Lecture impossible",
+                               message: media.localPath == nil ? failed
+                                   : "\(failed)\nLe lecteur de macOS ne sait pas lire ce format vidéo.",
                                actionTitle: "Ouvrir dans le lecteur par défaut") {
-                        NSWorkspace.shared.open(media.url)
+                        NSWorkspace.shared.open(media.localPath.map(URL.init(fileURLWithPath:)) ?? media.url)
                         close()
                     }
                 }
@@ -379,10 +481,13 @@ struct PlayerView: View {
     /// laisserait sinon une position nulle écraser la précédente.
     private func savePosition() {
         guard model.failed == nil, model.time > 1 else { return }
-        if let libraryID = media.libraryID {
-            library.updatePosition(libraryID, position: model.time)
-        } else {
+        switch media.source {
+        case .library(let id):
+            library.updatePosition(id, position: model.time)
+        case .stream:
             state.history.record(media.video, position: model.time, duration: model.duration)
+        case .local(let path, _):
+            state.local.record(path: path, position: model.time, duration: model.duration)
         }
     }
 
@@ -429,8 +534,13 @@ struct PlayerView: View {
                         Scrubber(value: Double(model.volume), total: 1, height: 4) { model.volume = Float($0) }
                             .frame(width: 90)
                     }
+                    if let next = media.nextLocalPath {
+                        playerButton("forward.end.fill", size: 19) { Task { await state.playLocal(path: next) } }
+                            .help("Épisode suivant")
+                    }
                     Spacer()
                     if media.isStream { qualityMenu }
+                    if model.audioChoices.count > 1 { audioMenu }
                     subtitleMenu
                     rateMenu
                     playerButton("arrow.up.left.and.arrow.down.right", size: 17) { model.toggleFullScreen() }
@@ -473,6 +583,21 @@ struct PlayerView: View {
         } label: {
             menuLabel((model.maxHeight == 0 ? "Auto" : "Max \(model.maxHeight)p")
                       + (model.videoHeight > 0 ? " · \(model.videoHeight)p" : ""), "dial.medium.fill")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var audioMenu: some View {
+        Menu {
+            ForEach(model.audioChoices) { choice in
+                Button { model.select(audio: choice.id) } label: {
+                    Label(choice.label, systemImage: model.audioChoice == choice.id ? "checkmark" : "")
+                }
+            }
+        } label: {
+            menuLabel(model.audioChoices.first { $0.id == model.audioChoice }?.label ?? "Audio", "waveform")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

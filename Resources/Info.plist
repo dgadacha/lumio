@@ -24,6 +24,16 @@
     <string>14.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.video</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Lumio parcourt ce dossier pour y repérer vos films et séries. Les fichiers sont seulement lus.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Lumio parcourt ce dossier pour y repérer vos films et séries. Les fichiers sont seulement lus.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Lumio parcourt ce dossier pour y repérer vos films et séries. Les fichiers sont seulement lus.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Lumio parcourt ce disque pour y repérer vos films et séries. Les fichiers sont seulement lus.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Lumio parcourt ce volume pour y repérer vos films et séries. Les fichiers sont seulement lus.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

@@ -11,6 +11,7 @@ struct LumioApp: App {
                 .environmentObject(state.library)
                 .environmentObject(state.downloads)
                 .environmentObject(state.history)
+                .environmentObject(state.local)
                 .frame(minWidth: 1080, minHeight: 680)
                 .preferredColorScheme(.dark)
         }
@@ -38,6 +39,12 @@ struct RootView: View {
                     } else {
                         CategoriesView()
                     }
+                case .local:
+                    if let series = state.localSeries {
+                        LocalSeriesView(series: series).id(series.id)
+                    } else {
+                        LocalLibraryView()
+                    }
                 case .search: SearchView()
                 case .library: LibraryView()
                 case .downloads: DownloadsView()
@@ -63,12 +70,57 @@ struct RootView: View {
                     .zIndex(3)
             }
         }
+        .overlay(alignment: .bottom) {
+            // Préparation d'un fichier local : visible et annulable, même si elle ne dure qu'un instant.
+            if state.localPreparing != nil, state.playing == nil {
+                HStack(spacing: 12) {
+                    ProgressView().controlSize(.small)
+                    Text("Préparation de la lecture…").font(.system(size: 13, weight: .semibold))
+                    Button("Annuler") { state.cancelLocalPreparation() }
+                        .buttonStyle(PrimaryButtonStyle(fill: Color.white.opacity(0.18), text: .white))
+                }
+                .padding(.horizontal, 18).padding(.vertical, 10)
+                .background(Theme.surface2, in: Capsule())
+                .shadow(color: .black.opacity(0.6), radius: 16, y: 6)
+                .padding(.bottom, 28)
+                .transition(.opacity)
+            }
+        }
         .animation(.easeOut(duration: 0.22), value: state.detail)
         .animation(.easeOut(duration: 0.25), value: state.playing)
         .alert("Lecture impossible", isPresented: Binding(get: { state.streamError != nil }, set: { if !$0 { state.streamError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(state.streamError ?? "")
+        }
+    }
+}
+
+// MARK: - Logo
+
+/// Logo typographique de l'app, lu dans le bundle. Sans bundle (lancement par `swift run`),
+/// on retombe sur le nom en texte.
+struct Wordmark: View {
+    var height: CGFloat = 20
+    private static let image: NSImage? = Bundle.main.url(forResource: "Wordmark", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+
+    var body: some View {
+        if let image = Self.image {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(height: height)
+                .fixedSize()
+                .accessibilityLabel("Lumio")
+        } else {
+            Text("LUMIO")
+                .font(.system(size: 23, weight: .black, design: .rounded))
+                .kerning(2.5)
+                .foregroundStyle(Theme.accent)
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 }
@@ -82,17 +134,13 @@ struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 22) {
-            Text("LUMIO")
-                .font(.system(size: 23, weight: .black, design: .rounded))
-                .kerning(2.5)
-                .foregroundStyle(Theme.accent)
-                .lineLimit(1)
-                .fixedSize()
+            Wordmark()
                 .padding(.leading, 78)
                 .onTapGesture { state.tab = .home }
 
             tabLink("Accueil", .home)
             tabLink("Catégories", .categories)
+            tabLink("Films et séries", .local)
             tabLink("Ma bibliothèque", .library)
             tabLink("Téléchargements", .downloads, badge: downloads.activeCount)
 
@@ -140,6 +188,7 @@ struct TopBar: View {
     private func tabLink(_ title: String, _ tab: AppState.Tab, badge: Int = 0) -> some View {
         Button {
             if tab == .categories { state.category = nil }
+            if tab == .local { state.localSeries = nil }
             state.tab = tab
         } label: {
             HStack(spacing: 6) {

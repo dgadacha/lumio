@@ -7,7 +7,8 @@ enum Theme {
     static let bg = Color(red: 0.043, green: 0.043, blue: 0.051)
     static let surface = Color(red: 0.094, green: 0.094, blue: 0.106)
     static let surface2 = Color(red: 0.15, green: 0.15, blue: 0.17)
-    static let accent = Color(red: 1.0, green: 0.33, blue: 0.22)
+    /// Couleur du logo (#FA3C20) : l'accent de l'app s'aligne dessus.
+    static let accent = Color(red: 0.98, green: 0.235, blue: 0.125)
     static let dim = Color.white.opacity(0.62)
     static let faint = Color.white.opacity(0.38)
 }

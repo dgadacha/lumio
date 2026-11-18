@@ -9,6 +9,8 @@ import AppKit
 enum DebugDriver {
     /// Hauteur d'image du flux en cours, renseignée par le lecteur pour la commande `height`.
     static var videoHeight = 0
+    /// État détaillé du lecteur en cours, fourni par lui pour la commande `player`.
+    static var playerReport: () -> String = { "aucun lecteur" }
 
     static func startIfRequested(_ state: AppState) {
         guard let path = ProcessInfo.processInfo.environment["LUMIO_DEBUG"],
@@ -32,7 +34,7 @@ enum DebugDriver {
                 case "snap":
                     log("snap \(argument): \(snapshot(to: argument))")
                 case "tab":
-                    let tabs: [String: AppState.Tab] = ["home": .home, "categories": .categories, "search": .search, "library": .library, "downloads": .downloads, "settings": .settings]
+                    let tabs: [String: AppState.Tab] = ["home": .home, "categories": .categories, "local": .local, "search": .search, "library": .library, "downloads": .downloads, "settings": .settings]
                     if let tab = tabs[argument] { state.tab = tab }
                 case "search":
                     state.query = argument
@@ -121,6 +123,46 @@ enum DebugDriver {
                     log("click \(argument): fiche ouverte=\(state.detail != nil) lecteur=\(state.playing != nil) onglet=\(state.tab)")
                 case "height":
                     log("height: \(videoHeight)p à \(argument)")
+                case "localscan":
+                    await state.local.scan()
+                    let catalog = state.local.catalog
+                    log("localscan: \(catalog.series.count) séries, \(catalog.movies.count) films, refusés=\(state.local.denied.count)")
+                    for series in catalog.series {
+                        log("  série: \(series.id) saisons=\(series.seasons) épisodes=\(series.episodes.count)")
+                    }
+                case "localseries":
+                    // localseries <clé> : ouvre la page d'une série.
+                    state.tab = .local
+                    state.localSeries = state.local.catalog.series.first { $0.id == argument }
+                    log("localseries \(argument): \(state.localSeries == nil ? "introuvable" : "ouverte")")
+                case "localplay":
+                    // localplay <clé> <saison> <épisode> : lit un épisode. Les positions ne sont pas écrites
+                    // sous le pilote de test (voir LocalLibrary.record).
+                    let fields = argument.split(separator: " ").map(String.init)
+                    guard fields.count == 3, let series = state.local.catalog.series.first(where: { $0.id == fields[0] }),
+                          let episode = series.episodes.first(where: { $0.season == Int(fields[1]) && $0.number == Int(fields[2]) }) else {
+                        log("localplay: épisode introuvable"); continue
+                    }
+                    let started = Date()
+                    await state.playLocal(path: episode.path)
+                    log("localplay: lecture=\(state.playing?.video.title ?? "aucune") détail=\(state.playing?.detailLine ?? "") préparé en \(String(format: "%.1f", Date().timeIntervalSince(started))) s sous-titres=\(state.playing?.subtitles.map(\.label) ?? []) suivant=\(state.playing?.nextLocalPath != nil) erreur=\(state.streamError ?? "aucune")")
+                case "player":
+                    log("player \(argument): [\(state.playing?.video.title ?? "-") — \(state.playing?.detailLine ?? "-")] \(playerReport())")
+                case "localresume":
+                    // localresume <clé> : ce que la page de la série proposerait, d'après les positions relues du disque.
+                    guard let series = state.local.catalog.series.first(where: { $0.id == argument }) else { log("localresume: série introuvable"); continue }
+                    let next = state.local.nextUp(in: series)
+                    let saved = next.flatMap { state.local.position(for: $0.path) }
+                    log("localresume \(argument): positions relues=\(state.local.positions.count) à reprendre=S\(next?.season ?? 0):É\(next?.number ?? 0) position=\(saved.map { String(format: "%.1f", $0.position) } ?? "absente") en cours=\(state.local.inProgress.count)")
+                case "localstop":
+                    let path = state.playing?.localPath
+                    state.playing = nil
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if let saved = path.flatMap({ state.local.position(for: $0) }) {
+                        log("localstop: position=\(String(format: "%.1f", saved.position)) durée=\(String(format: "%.0f", saved.duration))")
+                    } else {
+                        log("localstop: aucune position enregistrée")
+                    }
                 case "watch":
                     // Lecture en streaming de la vidéo de la fiche ouverte, ou du premier résultat.
                     guard let video = state.detail ?? state.results.first else { log("watch: pas de vidéo"); continue }
