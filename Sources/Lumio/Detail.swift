@@ -19,7 +19,8 @@ struct DetailOverlay: View {
     private static let commonLanguages = ["fr", "en", "es", "de", "it", "pt", "ja", "ko", "zh-Hans", "ar"]
 
     var body: some View {
-        ZStack {
+        GeometryReader { geo in
+          ZStack {
             Color.black.opacity(0.72)
                 .ignoresSafeArea()
                 .onTapGesture { state.detail = nil }
@@ -52,9 +53,16 @@ struct DetailOverlay: View {
                 .background(Theme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.7), radius: 40, y: 20)
+                // Un clic dans le panneau ne doit pas remonter jusqu'à la zone qui ferme la fiche.
+                .onTapGesture {}
                 .padding(.vertical, 44)
-                .frame(maxWidth: .infinity)
+                // La zone de défilement couvre toute la fenêtre : c'est elle, et non le fond placé
+                // derrière, qui reçoit les clics autour du panneau. Elle ferme donc la fiche.
+                .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .top)
+                .contentShape(Rectangle())
+                .onTapGesture { state.detail = nil }
             }
+          }
         }
         .task { await load() }
         .onExitCommand { state.detail = nil }

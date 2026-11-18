@@ -94,6 +94,31 @@ enum DebugDriver {
                     state.playing = nil
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     log("stop: position=\(state.library.items.first?.position ?? -1)")
+                case "click":
+                    // click <x> <y> : clic gauche réel dans la fenêtre (points, origine en haut à gauche).
+                    let fields = argument.split(separator: " ").compactMap { Double($0) }
+                    guard fields.count == 2, let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                        log("click: arguments ou fenêtre manquants"); continue
+                    }
+                    let point = NSPoint(x: fields[0], y: window.frame.height - fields[1])
+                    // L'app doit être active et la fenêtre principale, sinon le premier clic ne fait que l'activer.
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    // Les deux événements partent ensemble dans la file : une vue qui suit la souris
+                    // (texte sélectionnable) y trouve le relâchement, au lieu de l'attendre indéfiniment.
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(
+                            with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                            pressure: type == .leftMouseDown ? 1 : 0) {
+                            NSApp.postEvent(event, atStart: false)
+                        }
+                    }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    log("click: fenêtre clé=\(window.isKeyWindow) app active=\(NSApp.isActive) hauteur=\(Int(window.frame.height))")
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    log("click \(argument): fiche ouverte=\(state.detail != nil) lecteur=\(state.playing != nil) onglet=\(state.tab)")
                 case "height":
                     log("height: \(videoHeight)p à \(argument)")
                 case "watch":
