@@ -79,6 +79,8 @@ final class WatchHistory: ObservableObject {
     }
 
     private func save() {
+        // Sous le pilote de test, rien n'est écrit dans l'historique réel de l'utilisateur.
+        guard ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil else { return }
         if let data = try? JSONEncoder().encode(entries) { try? data.write(to: file, options: .atomic) }
     }
 

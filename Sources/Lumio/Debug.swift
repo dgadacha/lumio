@@ -11,6 +11,11 @@ enum DebugDriver {
     static var videoHeight = 0
     /// État détaillé du lecteur en cours, fourni par lui pour la commande `player`.
     static var playerReport: () -> String = { "aucun lecteur" }
+    /// Place la lecture à quelques secondes de la fin, pour tester l'enchaînement des épisodes.
+    static var playerSeekNearEnd: () -> Void = {}
+    static var playerSeekTo: (Double) -> Void = { _ in }
+    /// Ouvre un panneau du lecteur (tracks, episodes, speed, quality) ou le ferme (none).
+    static var playerSetPanel: (String) -> Void = { _ in }
 
     static func startIfRequested(_ state: AppState) {
         guard let path = ProcessInfo.processInfo.environment["LUMIO_DEBUG"],
@@ -153,6 +158,12 @@ enum DebugDriver {
                     let started = Date()
                     await state.playLocal(path: episode.path)
                     log("localplay: lecture=\(state.playing?.video.title ?? "aucune") détail=\(state.playing?.detailLine ?? "") préparé en \(String(format: "%.1f", Date().timeIntervalSince(started))) s sous-titres=\(state.playing?.subtitles.map(\.label) ?? []) suivant=\(state.playing?.nextLocalPath != nil) erreur=\(state.streamError ?? "aucune")")
+                case "panel":
+                    playerSetPanel(argument)
+                case "seekto":
+                    playerSeekTo(Double(argument) ?? 0)
+                case "seekend":
+                    playerSeekNearEnd()
                 case "player":
                     log("player \(argument): [\(state.playing?.video.title ?? "-") — \(state.playing?.detailLine ?? "-")] \(playerReport())")
                 case "localresume":

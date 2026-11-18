@@ -30,7 +30,7 @@ dans le format de votre choix pour regarder hors ligne.
 | **Lecture immédiate** | Un bouton « Regarder » lit la vidéo en streaming, sans rien télécharger, avec reprise là où vous vous êtes arrêté. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
-| **Lecteur intégré** | Sous-titres, vitesse de lecture, qualité en streaming, plein écran et raccourcis clavier. |
+| **Lecteur intégré** | Commandes épurées, panneaux Audio et Sous-titres, choix de l'épisode, enchaînement automatique, vitesse, qualité en streaming, plein écran et raccourcis clavier. |
 | **Claude, en option** | Avec votre clé API : des rangées « Pour vous » d'après ce que vous regardez, et les synopsis de vos films et séries. |
 | **File d'attente** | Progression, débit, temps restant et annulation, deux téléchargements à la fois. |
 
@@ -65,7 +65,7 @@ connexion et dans la résolution choisie, 4K comprise.
 | `←` `→` | Reculer / avancer de 10 secondes |
 | `↑` `↓` | Volume |
 | `F` | Plein écran |
-| `Échap` | Quitter le plein écran, puis le lecteur |
+| `Échap` | Fermer le panneau ouvert, puis quitter le plein écran, puis le lecteur |
 
 <img src="docs/screenshots/library.jpg" alt="Bibliothèque hors ligne">
 
@@ -101,6 +101,9 @@ film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, sais
 - **Lecture des MKV** : macOS ne lit pas ce format. Lumio recopie donc l'épisode dans un fichier
   temporaire lisible, sans réencoder la vidéo, ce qui prend une à deux secondes. Les deux dernières
   copies sont gardées dans le cache, les autres sont effacées.
+- **Dans le lecteur** : un panneau liste les épisodes de la série et permet d'en changer sans quitter
+  la lecture ; à la fin d'un épisode, le suivant démarre après un compte à rebours annulable
+  (désactivable dans les réglages).
 - **Pistes audio et sous-titres** : le lecteur propose les langues du fichier (version originale,
   version française…) et ses sous-titres texte. Les sous-titres en image (PGS, VobSub) ne sont pas
   pris en charge.

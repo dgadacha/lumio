@@ -100,6 +100,9 @@ struct PlayableMedia: Identifiable, Hashable {
     }
 }
 
+/// Panneaux qui s'ouvrent au-dessus des commandes du lecteur.
+enum PlayerPanel: Hashable { case tracks, episodes, speed, quality }
+
 /// Piste audio d'un fichier (version originale, version française…).
 struct AudioChoice: Identifiable, Hashable {
     let id: Int
@@ -128,6 +131,13 @@ final class PlayerModel: ObservableObject {
     @Published var controlsVisible = true
     @Published var failed: String?
     @Published var notice: String?
+    /// Secondes restantes avant l'enchaînement automatique sur l'épisode suivant ; nul hors compte à rebours.
+    @Published var nextCountdown: Int?
+    /// Panneau ouvert au-dessus des commandes (pistes, épisodes, vitesse, qualité).
+    @Published var panel: PlayerPanel?
+    var onNext: () -> Void = {}
+    private var endObserver: NSObjectProtocol?
+    private var countdownTask: Task<Void, Never>?
     @Published var audioChoices: [AudioChoice] = []
     @Published var audioChoice: Int?
     private var audioGroup: AVMediaSelectionGroup?
@@ -164,6 +174,11 @@ final class PlayerModel: ObservableObject {
             let message = observed.error?.localizedDescription ?? "Lecture impossible"
             DispatchQueue.main.async { self?.failed = message }
         }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: playerItem, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reachedEnd() }
+        }
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
         ) { [weak self] current in
@@ -192,6 +207,16 @@ final class PlayerModel: ObservableObject {
         player.play()
         isPlaying = true
         pokeControls()
+        DebugDriver.playerSetPanel = { [weak self] name in
+            let panels: [String: PlayerPanel] = ["tracks": .tracks, "episodes": .episodes, "speed": .speed, "quality": .quality]
+            self?.panel = panels[name]
+            self?.pokeControls()
+        }
+        DebugDriver.playerSeekTo = { [weak self] seconds in self?.seek(to: seconds) }
+        DebugDriver.playerSeekNearEnd = { [weak self] in
+            guard let self, self.duration > 10 else { return }
+            self.seek(to: self.duration - 4)
+        }
         DebugDriver.playerReport = { [weak self] in
             guard let self else { return "lecteur fermé" }
             let item = self.playerItem
@@ -200,7 +225,8 @@ final class PlayerModel: ObservableObject {
                 + "attente=\(self.player.reasonForWaitingToPlay?.rawValue ?? "-") échec=\(self.failed ?? "aucun") "
                 + "erreur=\(item.error?.localizedDescription ?? "aucune") journal=\(item.errorLog()?.events.last?.errorComment ?? "-") reprise=\(self.media.startPosition) "
                 + "détail=\((item.error as NSError?).map { "\($0.domain) \($0.code) sous-jacente=\(($0.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain) \($0.code)" } ?? "-") raison=\($0.localizedFailureReason ?? "-")" } ?? "-") "
-                + "audio=\(self.audioChoices.map(\.label)) choisie=\(self.audioChoice.map(String.init) ?? "-") fichier=\(self.media.url.lastPathComponent)"
+                + "audio=\(self.audioChoices.map(\.label)) choisie=\(self.audioChoice.map(String.init) ?? "-") fichier=\(self.media.url.lastPathComponent) "
+                + "sous-titre=\(self.subtitle?.label ?? "aucun") texte=\(self.caption.count)c compte=\(self.nextCountdown.map(String.init) ?? "-")"
         }
     }
 
@@ -229,7 +255,10 @@ final class PlayerModel: ObservableObject {
         case 125: volume = max(0, volume - 0.1)
         case 3: toggleFullScreen()
         case 53:
-            if NSApp.keyWindow?.styleMask.contains(.fullScreen) == true { toggleFullScreen() } else { onClose() }
+            // Échap ferme d'abord le panneau ouvert, puis le plein écran, puis le lecteur.
+            if panel != nil { panel = nil }
+            else if NSApp.keyWindow?.styleMask.contains(.fullScreen) == true { toggleFullScreen() }
+            else { onClose() }
         default: return true
         }
         pokeControls()
@@ -237,6 +266,7 @@ final class PlayerModel: ObservableObject {
     }
 
     func togglePlay() {
+        cancelNext() // l'utilisateur reprend la main : pas d'enchaînement automatique
         if player.rate == 0 {
             if duration > 0, time >= duration - 0.5 { seek(to: 0) }
             player.playImmediately(atRate: rate)
@@ -249,6 +279,7 @@ final class PlayerModel: ObservableObject {
     func seek(by delta: Double) { seek(to: time + delta) }
 
     func seek(to seconds: Double) {
+        cancelNext() // un déplacement pendant le compte à rebours l'annule
         let target = max(0, min(seconds, max(duration - 0.2, 0)))
         time = target
         // En streaming, une tolérance large évite de recharger un segment pour un écart minime.
@@ -344,6 +375,36 @@ final class PlayerModel: ObservableObject {
         }
     }
 
+    /// Fin de l'épisode : s'il y en a un suivant, il démarre après un court compte à rebours annulable.
+    private func reachedEnd() {
+        isPlaying = false
+        controlsVisible = true
+        let enabled = UserDefaults.standard.object(forKey: "autoplayNext") as? Bool ?? true
+        guard enabled, media.nextLocalPath != nil, nextCountdown == nil else { return }
+        nextCountdown = 6
+        countdownTask = Task { [weak self] in
+            while let remaining = self?.nextCountdown, remaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self, self.nextCountdown != nil else { return }
+                self.nextCountdown = remaining - 1
+            }
+            guard !Task.isCancelled, let self, self.nextCountdown == 0 else { return }
+            self.nextCountdown = nil
+            self.onNext()
+        }
+    }
+
+    func cancelNext() {
+        countdownTask?.cancel()
+        nextCountdown = nil
+    }
+
+    func playNextNow() {
+        countdownTask?.cancel()
+        nextCountdown = nil
+        onNext()
+    }
+
     func toggleFullScreen() {
         NSApp.keyWindow?.toggleFullScreen(nil)
     }
@@ -353,7 +414,7 @@ final class PlayerModel: ObservableObject {
         if !controlsVisible { controlsVisible = true }
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isPlaying else { return }
+            guard let self, self.isPlaying, self.nextCountdown == nil, self.panel == nil else { return }
             self.controlsVisible = false
             NSCursor.setHiddenUntilMouseMoves(true)
         }
@@ -364,6 +425,9 @@ final class PlayerModel: ObservableObject {
     func shutdown() -> Double {
         hideWork?.cancel()
         subtitleTask?.cancel()
+        countdownTask?.cancel()
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
         player.pause()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -395,6 +459,7 @@ struct PlayerSurface: NSViewRepresentable {
 struct PlayerView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
+    @EnvironmentObject var local: LocalLibrary
     @StateObject private var model: PlayerModel
 
     init(media: PlayableMedia) {
@@ -421,7 +486,11 @@ struct PlayerView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { model.toggleFullScreen() }
-                .onTapGesture { model.togglePlay(); model.pokeControls() }
+                .onTapGesture {
+                    // Un clic dans l'image ferme d'abord le panneau ouvert.
+                    if model.panel != nil { model.panel = nil } else { model.togglePlay() }
+                    model.pokeControls()
+                }
 
             if model.isBuffering, model.failed == nil {
                 ProgressView().controlSize(.large).allowsHitTesting(false)
@@ -438,7 +507,7 @@ struct PlayerView: View {
                         .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 6))
                         .shadow(color: .black, radius: 3)
                         .padding(.horizontal, 80)
-                        .padding(.bottom, model.controlsVisible ? 92 : 48)
+                        .padding(.bottom, model.controlsVisible ? 104 : 48)
                 }
                 .allowsHitTesting(false)
             }
@@ -462,11 +531,33 @@ struct PlayerView: View {
             controls
                 .opacity(model.controlsVisible ? 1 : 0)
                 .animation(.easeOut(duration: 0.25), value: model.controlsVisible)
+
+            if let panel = model.panel {
+                panelView(panel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 22)
+                    .padding(.bottom, 92)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let countdown = model.nextCountdown {
+                nextCard(countdown)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 28)
+                    .padding(.bottom, 84)
+                    .transition(.opacity)
+            }
         }
         .onContinuousHover { phase in
             if case .active = phase { model.pokeControls() }
         }
-        .onAppear { model.onClose = close }
+        .onAppear {
+            model.onClose = close
+            model.onNext = {
+                guard let next = media.nextLocalPath else { return }
+                Task { await state.playLocal(path: next) }
+            }
+        }
         .onDisappear {
             savePosition()
             _ = model.shutdown()
@@ -496,61 +587,83 @@ struct PlayerView: View {
         state.playing = nil
     }
 
+    private func nextCard(_ countdown: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Épisode suivant dans \(countdown) s").font(.system(size: 13.5, weight: .semibold))
+            HStack(spacing: 8) {
+                Button { model.playNextNow() } label: { Label("Lire", systemImage: "play.fill") }
+                    .buttonStyle(PrimaryButtonStyle())
+                Button("Annuler") { model.cancelNext() }
+                    .buttonStyle(PrimaryButtonStyle(fill: Color.white.opacity(0.16), text: .white))
+            }
+        }
+        .padding(16)
+        .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.14)))
+    }
+
     private var controls: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                playerButton("chevron.left", size: 15) { close() }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(media.video.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                    Text(media.detailLine)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.dim)
-                }
+            HStack {
+                playerButton("chevron.left", size: 18) { close() }
                 Spacer()
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 22)
             .padding(.top, 34)
-            .padding(.bottom, 36)
-            .background(LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom))
+            .padding(.bottom, 30)
+            .background(LinearGradient(colors: [.black.opacity(0.5), .clear], startPoint: .top, endPoint: .bottom))
 
             Spacer().allowsHitTesting(false)
 
-            VStack(spacing: 4) {
-                Scrubber(value: model.time, total: model.duration) { model.seek(to: $0); model.pokeControls() }
+            VStack(spacing: 10) {
+                // Barre de progression d'un trait, avec le temps restant à droite.
+                HStack(spacing: 12) {
+                    Scrubber(value: model.time, total: model.duration) { model.seek(to: $0); model.pokeControls() }
+                    Text(Fmt.duration(max(model.duration - model.time, 0)).isEmpty ? "0:00" : Fmt.duration(max(model.duration - model.time, 0)))
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.85))
+                }
 
-                HStack(spacing: 10) {
-                    playerButton(model.isPlaying ? "pause.fill" : "play.fill", size: 17) { model.togglePlay() }
-                    playerButton("gobackward.10", size: 15) { model.seek(by: -10) }
-                    playerButton("goforward.10", size: 15) { model.seek(by: 10) }
-                    if let next = media.nextLocalPath {
-                        playerButton("forward.end.fill", size: 14) { Task { await state.playLocal(path: next) } }
-                            .help("Épisode suivant")
+                HStack(spacing: 22) {
+                    HStack(spacing: 22) {
+                        playerButton(model.isPlaying ? "pause.fill" : "play.fill", size: 25) { model.togglePlay() }
+                        playerButton("gobackward.10", size: 23) { model.seek(by: -10) }
+                        playerButton("goforward.10", size: 23) { model.seek(by: 10) }
+                        VolumeControl(model: model)
                     }
-                    HStack(spacing: 4) {
-                        playerButton(model.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 13) {
-                            model.volume = model.volume == 0 ? 1 : 0
+
+                    // Titre entre les deux groupes de boutons : tronqué s'il est long, jamais dessous.
+                    (Text(media.video.title).fontWeight(.semibold)
+                     + Text(media.localPath == nil ? "" : "   \(media.detailLine)").fontWeight(.regular))
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+
+                    HStack(spacing: 22) {
+                        if let next = media.nextLocalPath {
+                            playerButton("forward.end", size: 23) { Task { await state.playLocal(path: next) } }
+                                .help("Épisode suivant")
                         }
-                        Scrubber(value: Double(model.volume), total: 1, height: 2, tint: .white.opacity(0.75), thumb: 8) { model.volume = Float($0) }
-                            .frame(width: 60)
+                        if currentSeries != nil {
+                            panelButton(.episodes, "rectangle.stack", help: "Épisodes")
+                        }
+                        if media.isStream { panelButton(.quality, "dial.medium", help: "Qualité") }
+                        if !media.subtitles.isEmpty || model.audioChoices.count > 1 {
+                            panelButton(.tracks, model.subtitle == nil ? "captions.bubble" : "captions.bubble.fill",
+                                        help: "Audio et sous-titres")
+                        }
+                        panelButton(.speed, "speedometer", help: "Vitesse")
+                        playerButton("arrow.up.left.and.arrow.down.right", size: 20) { model.toggleFullScreen() }
                     }
-                    Text("\(Fmt.duration(model.time).isEmpty ? "0:00" : Fmt.duration(model.time)) / \(Fmt.duration(model.duration))")
-                        .font(.system(size: 11.5).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.7))
-                        .padding(.leading, 6)
-                    Spacer()
-                    HStack(spacing: 16) {
-                        if media.isStream { qualityMenu }
-                        if model.audioChoices.count > 1 { audioMenu }
-                        subtitleMenu
-                        rateMenu
-                    }
-                    playerButton("arrow.up.left.and.arrow.down.right", size: 13) { model.toggleFullScreen() }
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 40)
-            .padding(.bottom, 12)
-            .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+            .padding(.horizontal, 22)
+            .padding(.top, 44)
+            .padding(.bottom, 20)
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.62)], startPoint: .top, endPoint: .bottom))
         }
     }
 
@@ -561,82 +674,304 @@ struct PlayerView: View {
         } label: {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .regular))
-                .foregroundStyle(.white.opacity(0.92))
-                .frame(width: 28, height: 28)
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
-    private func menuLabel(_ text: String, _ symbol: String, dimmed: Bool = false) -> some View {
-        Label(text, systemImage: symbol)
-            .font(.system(size: 11.5, weight: .regular))
-            .foregroundStyle(dimmed ? Theme.faint : Color.white.opacity(0.8))
+    // MARK: Panneaux
+
+    /// Série du disque à laquelle appartient l'épisode en cours, s'il y en a une.
+    private var currentSeries: LocalSeries? {
+        guard let path = media.localPath else { return nil }
+        return local.catalog.series.first { series in series.episodes.contains { $0.path == path } }
     }
 
-    private var qualityMenu: some View {
-        Menu {
-            ForEach([0, 1080, 720, 480, 360], id: \.self) { height in
-                Button { model.set(maxHeight: height) } label: {
-                    Label(height == 0 ? "Automatique" : "\(height)p maximum", systemImage: model.maxHeight == height ? "checkmark" : "")
+    private func panelButton(_ panel: PlayerPanel, _ symbol: String, help: String) -> some View {
+        Button {
+            model.panel = model.panel == panel ? nil : panel
+            model.pokeControls()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .scaleEffect(model.panel == panel ? 1.15 : 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .animation(.easeOut(duration: 0.12), value: model.panel)
+    }
+
+    @ViewBuilder
+    private func panelView(_ panel: PlayerPanel) -> some View {
+        Group {
+            switch panel {
+            case .tracks: tracksPanel
+            case .episodes: if let series = currentSeries { EpisodesPanel(series: series, currentPath: media.localPath ?? "") }
+            case .speed: speedPanel
+            case .quality: qualityPanel
+            }
+        }
+        .background(Color(white: 0.14).opacity(0.97))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.22), lineWidth: 1))
+        .shadow(color: .black.opacity(0.6), radius: 24, y: 10)
+        // Un clic dans le panneau ne doit pas atteindre l'image, qui le fermerait.
+        .onTapGesture {}
+    }
+
+    /// Audio et sous-titres côte à côte, la piste active cochée.
+    private var tracksPanel: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if model.audioChoices.count > 1 {
+                PanelColumn(title: "Audio") {
+                    ForEach(model.audioChoices) { choice in
+                        PanelRow(label: choice.label, selected: model.audioChoice == choice.id) { model.select(audio: choice.id) }
+                    }
                 }
             }
-        } label: {
-            menuLabel((model.maxHeight == 0 ? "Auto" : "Max \(model.maxHeight)p")
-                      + (model.videoHeight > 0 ? " · \(model.videoHeight)p" : ""), "dial.medium.fill")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-    }
-
-    private var audioMenu: some View {
-        Menu {
-            ForEach(model.audioChoices) { choice in
-                Button { model.select(audio: choice.id) } label: {
-                    Label(choice.label, systemImage: model.audioChoice == choice.id ? "checkmark" : "")
+            if !media.subtitles.isEmpty {
+                PanelColumn(title: "Sous-titres") {
+                    PanelRow(label: "Désactivés", selected: model.subtitle == nil) { model.select(subtitle: nil) }
+                    ForEach(media.subtitles) { track in
+                        PanelRow(label: track.label, selected: model.subtitle == track) { model.select(subtitle: track) }
+                    }
                 }
             }
-        } label: {
-            menuLabel(model.audioChoices.first { $0.id == model.audioChoice }?.label ?? "Audio", "waveform")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .frame(maxHeight: 420)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var subtitleMenu: some View {
-        Menu {
-            Button { model.select(subtitle: nil) } label: {
-                Label("Désactivés", systemImage: model.subtitle == nil ? "checkmark" : "")
-            }
-            ForEach(media.subtitles) { track in
-                Button { model.select(subtitle: track) } label: {
-                    Label(track.label, systemImage: model.subtitle == track ? "checkmark" : "")
-                }
-            }
-        } label: {
-            menuLabel(model.subtitle?.label ?? "Sous-titres", "captions.bubble.fill", dimmed: media.subtitles.isEmpty)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(media.subtitles.isEmpty)
-    }
-
-    private var rateMenu: some View {
-        Menu {
+    private var speedPanel: some View {
+        PanelColumn(title: "Vitesse") {
             ForEach([0.5, 0.75, 1, 1.25, 1.5, 2] as [Float], id: \.self) { value in
-                Button { model.set(rate: value) } label: {
-                    Label(value == 1 ? "Normale" : "×\(String(format: "%g", value))", systemImage: model.rate == value ? "checkmark" : "")
+                PanelRow(label: value == 1 ? "Normale" : "×\(String(format: "%g", value))", selected: model.rate == value) {
+                    model.set(rate: value)
                 }
             }
-        } label: {
-            menuLabel(model.rate == 1 ? "Vitesse" : "×\(String(format: "%g", model.rate))", "speedometer")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+    }
+
+    private var qualityPanel: some View {
+        PanelColumn(title: "Qualité") {
+            ForEach([0, 1080, 720, 480, 360], id: \.self) { height in
+                PanelRow(label: height == 0 ? "Automatique" : "\(height)p au plus", selected: model.maxHeight == height) {
+                    model.set(maxHeight: height)
+                }
+            }
+            if model.videoHeight > 0 {
+                Text("Actuellement : \(model.videoHeight)p")
+                    .font(.system(size: 12)).foregroundStyle(Theme.faint)
+                    .padding(.horizontal, 22).padding(.top, 6)
+            }
+        }
+    }
+}
+
+/// Colonne titrée d'un panneau du lecteur.
+struct PanelColumn<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 19, weight: .bold))
+                .padding(.horizontal, 22)
+                .padding(.top, 20)
+                .padding(.bottom, 10)
+            // Le panneau épouse son contenu ; il ne défile que si la liste est trop longue.
+            ViewThatFits(in: .vertical) {
+                VStack(alignment: .leading, spacing: 0) { content }
+                    .padding(.bottom, 14)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) { content }
+                        .padding(.bottom, 14)
+                }
+            }
+        }
+        .frame(minWidth: 200, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// Ligne cochable d'un panneau : blanche et cochée si active, atténuée sinon.
+struct PanelRow: View {
+    let label: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 16)
+                Text(label)
+                    .font(.system(size: 15, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+                Spacer(minLength: 16)
+            }
+            .foregroundStyle(selected || hover ? Color.white : Color.white.opacity(0.62))
+            .padding(.horizontal, 20)
+            .padding(.vertical, 9)
+            .background(Color.white.opacity(hover ? 0.08 : 0))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
+/// Liste des épisodes de la série en cours : l'épisode lu est déployé, un clic lance un autre épisode.
+struct EpisodesPanel: View {
+    let series: LocalSeries
+    let currentPath: String
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var local: LocalLibrary
+    @State private var season: Int?
+
+    private var currentSeason: Int { series.episodes.first { $0.path == currentPath }?.season ?? series.seasons.first ?? 1 }
+
+    var body: some View {
+        let shown = season ?? currentSeason
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(series.title).font(.system(size: 20, weight: .bold)).lineLimit(1)
+                Spacer()
+                if series.seasons.count > 1 {
+                    HStack(spacing: 6) {
+                        ForEach(series.seasons, id: \.self) { number in
+                            Button("S\(number)") { season = number }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 13, weight: shown == number ? .bold : .regular))
+                                .foregroundStyle(shown == number ? Color.white : Color.white.opacity(0.55))
+                        }
+                    }
+                } else {
+                    Text("Saison \(shown)").font(.system(size: 13)).foregroundStyle(Theme.dim)
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(series.episodes(in: shown)) { episode in
+                            EpisodePanelRow(episode: episode, current: episode.path == currentPath)
+                                .id(episode.path)
+                        }
+                    }
+                    .padding(.bottom, 10)
+                }
+                .onAppear { proxy.scrollTo(currentPath, anchor: .center) }
+            }
+        }
+        .frame(width: 470)
+        .frame(maxHeight: 460)
+    }
+}
+
+struct EpisodePanelRow: View {
+    let episode: LocalEpisode
+    let current: Bool
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var local: LocalLibrary
+    @State private var hover = false
+    @State private var duration: Double = 0
+
+    var body: some View {
+        let position = local.position(for: episode.path)
+        Button {
+            guard !current else { return }
+            Task { await state.playLocal(path: episode.path) }
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 14) {
+                    Text("\(episode.number)").font(.system(size: 16, weight: .semibold).monospacedDigit()).frame(width: 26, alignment: .trailing)
+                    Text(episode.label).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    if state.localPreparing == episode.path { ProgressView().controlSize(.small) }
+                    Spacer(minLength: 12)
+                    // Trait de progression de l'épisode.
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Color.white.opacity(0.3)
+                            Theme.accent.frame(width: geo.size.width * (position?.finished == true ? 1 : (position?.progress ?? 0)))
+                        }
+                    }
+                    .frame(width: 70, height: 2)
+                }
+                if current {
+                    HStack(alignment: .top, spacing: 14) {
+                        Color.clear
+                            .frame(width: 150, height: 84)
+                            .overlay(LocalThumb(path: episode.path))
+                            .overlay(Color.black.opacity(0.45))
+                            .overlay {
+                                Label("Lecture en cours", systemImage: "waveform")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        VStack(alignment: .leading, spacing: 5) {
+                            if duration > 0 {
+                                Text(Fmt.longDuration(duration)).font(.system(size: 13)).foregroundStyle(.white.opacity(0.85))
+                            }
+                            Text("\(Fmt.bytes(episode.size)) · \(URL(fileURLWithPath: episode.path).pathExtension.uppercased())")
+                                .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                        }
+                    }
+                    .padding(.leading, 40)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 22)
+            .padding(.vertical, current ? 16 : 13)
+            .background(Color.white.opacity(current ? 0.06 : (hover ? 0.08 : 0)))
+            .overlay { if current { Rectangle().stroke(Color.white.opacity(0.85), lineWidth: 1.5) } }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(state.localPreparing != nil)
+        .onHover { hover = $0 }
+        .task(id: episode.path) { if current { duration = await MediaInspector.shared.probe(episode.path)?.duration ?? 0 } }
+    }
+}
+
+/// Haut-parleur seul au repos ; le curseur de volume se déploie au survol.
+struct VolumeControl: View {
+    @ObservedObject var model: PlayerModel
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                model.volume = model.volume == 0 ? 1 : 0
+                model.pokeControls()
+            } label: {
+                Image(systemName: model.volume == 0 ? "speaker.slash" : (model.volume < 0.5 ? "speaker.wave.1" : "speaker.wave.2"))
+                    .font(.system(size: 23, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if hover {
+                Scrubber(value: Double(model.volume), total: 1, tint: .white, thumb: 9) { model.volume = Float($0) }
+                    .frame(width: 70)
+                    .transition(.opacity)
+            }
+        }
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.15), value: hover)
     }
 }
 
@@ -644,9 +979,12 @@ struct PlayerView: View {
 struct Scrubber: View {
     let value: Double
     let total: Double
-    var height: CGFloat = 3
+    /// Épaisseur du rail ; la partie lue est un point plus épaisse, pour rester lisible sur un rail très fin.
+    var height: CGFloat = 1
     var tint: Color = Theme.accent
     var thumb: CGFloat = 10
+    /// Curseur rond visible en permanence (barre de progression) ou seulement au survol (volume).
+    var showsThumb = true
     let onSeek: (Double) -> Void
     @State private var hover = false
     @State private var dragValue: Double?
@@ -655,18 +993,18 @@ struct Scrubber: View {
         GeometryReader { geo in
             let fraction = total > 0 ? min(1, max(0, (dragValue ?? value) / total)) : 0
             let active = hover || dragValue != nil
+            let size = active ? thumb + 3 : thumb
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.22))
-                Capsule().fill(tint).frame(width: geo.size.width * fraction)
+                Rectangle().fill(Color.white.opacity(0.45)).frame(height: height)
+                Rectangle().fill(tint).frame(width: geo.size.width * fraction, height: height + 1)
                 Circle()
                     .fill(tint)
-                    .frame(width: thumb, height: thumb)
-                    .offset(x: geo.size.width * fraction - thumb / 2)
-                    .opacity(active ? 1 : 0)
+                    .frame(width: size, height: size)
+                    .offset(x: min(max(geo.size.width * fraction - size / 2, 0), geo.size.width - size))
+                    .opacity(showsThumb || active ? 1 : 0)
             }
-            // Fine au repos, un peu plus épaisse au survol pour rester facile à attraper.
-            .frame(height: active ? height + 2 : height)
             .frame(maxHeight: .infinity)
+            // Zone de clic bien plus haute que le trait : il reste facile à attraper.
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -679,8 +1017,8 @@ struct Scrubber: View {
                     }
             )
             .onHover { hover = $0 }
-            .animation(.easeOut(duration: 0.12), value: hover)
+            .animation(.easeOut(duration: 0.12), value: active)
         }
-        .frame(height: 16)
+        .frame(height: 18)
     }
 }

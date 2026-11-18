@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var local: LocalLibrary
     @AppStorage("downloadDir") private var downloadDir = ""
     @AppStorage("defaultHeight") private var defaultHeight = 1080
+    @AppStorage("autoplayNext") private var autoplayNext = true
     @State private var rowsText = ""
     @State private var keyDraft = ""
     @State private var keySaved = APIKeyStore.hasKey
@@ -56,6 +57,15 @@ struct SettingsView: View {
                         .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
+                Divider().overlay(Color.white.opacity(0.1))
+                Toggle(isOn: $autoplayNext) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Lecture automatique de l'épisode suivant").font(.system(size: 13.5, weight: .semibold))
+                        Text("À la fin d'un épisode, le suivant démarre après un compte à rebours de quelques secondes, annulable.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    }
+                }
+                .toggleStyle(.switch)
                 Divider().overlay(Color.white.opacity(0.1))
                 Toggle(isOn: $local.describeEnabled) {
                     VStack(alignment: .leading, spacing: 3) {
