@@ -297,6 +297,21 @@ final class LocalLibrary: ObservableObject {
         didSet { UserDefaults.standard.set(folders, forKey: "scanFolders") }
     }
 
+    /// Fiches rédigées par Claude, par identifiant d'œuvre. Conservées sur disque : un titre n'est demandé qu'une fois.
+    @Published private(set) var info: [String: MediaInfo] = [:]
+    @Published private(set) var describing = false
+    @Published var describeError: String?
+    @Published var describeEnabled = UserDefaults.standard.object(forKey: "localDescriptions") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(describeEnabled, forKey: "localDescriptions")
+            if describeEnabled { Task { await fetchMissingInfo() } }
+        }
+    }
+    private let infoFile = Paths.support.appendingPathComponent("local-metadata.json")
+    /// Après un échec, plus d'appel automatique : chaque tentative est facturée. Un clic sur « Réessayer »
+    /// ou une relance de l'app lève la suspension.
+    private var describeSuspended = false
+
     private let catalogFile = Paths.support.appendingPathComponent("local-media.json")
     private let positionsFile = Paths.support.appendingPathComponent("local-positions.json")
 
@@ -315,6 +330,9 @@ final class LocalLibrary: ObservableObject {
         if let data = try? Data(contentsOf: catalogFile), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             catalog = stored.catalog
             lastScan = stored.date
+        }
+        if let data = try? Data(contentsOf: infoFile), let stored = try? JSONDecoder().decode([String: MediaInfo].self, from: data) {
+            info = stored
         }
         if let data = try? Data(contentsOf: positionsFile),
            let stored = try? JSONDecoder().decode([String: LocalPosition].self, from: data) {
@@ -338,6 +356,63 @@ final class LocalLibrary: ObservableObject {
         if let data = try? JSONEncoder().encode(Stored(date: Date(), catalog: catalog)) {
             try? data.write(to: catalogFile, options: .atomic)
         }
+        // Sous le pilote de test, pas d'appel automatique : il serait facturé sur la clé de l'utilisateur.
+        if ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil { await fetchMissingInfo() }
+    }
+
+    // MARK: Fiches rédigées par Claude
+
+    static func infoKey(_ movie: LocalMovie) -> String {
+        "film-\(MediaParser.normalize(movie.title))-\(movie.year.map(String.init) ?? "x")"
+    }
+
+    func info(for series: LocalSeries) -> MediaInfo? { info[series.id] }
+    func info(for movie: LocalMovie) -> MediaInfo? { info[Self.infoKey(movie)] }
+
+    /// Demande à Claude les fiches manquantes, en un seul appel par lot de vingt titres.
+    /// Seuls le titre, l'année et le type (film ou série) sont envoyés ; jamais les chemins ni les noms de fichiers.
+    /// Une fiche obtenue, même vide (œuvre non reconnue), n'est plus redemandée, sauf via `refresh`.
+    func fetchMissingInfo(refresh ids: Set<String> = []) async {
+        guard describeEnabled, !describing, APIKeyStore.hasKey else { return }
+        if ids.isEmpty, describeSuspended { return }
+        describeSuspended = false
+        var requests: [MediaInfoRequest] = catalog.series.map {
+            MediaInfoRequest(id: $0.id, title: $0.title, year: $0.year, isSeries: true)
+        }
+        requests += catalog.movies.map {
+            MediaInfoRequest(id: Self.infoKey($0), title: $0.title, year: $0.year, isSeries: false)
+        }
+        var seen = Set<String>()
+        requests = requests.filter { seen.insert($0.id).inserted && (info[$0.id] == nil || ids.contains($0.id)) }
+        guard !requests.isEmpty else { return }
+
+        describing = true
+        describeError = nil
+        defer { describing = false }
+        for start in stride(from: 0, to: requests.count, by: 20) {
+            let batch = Array(requests[start..<min(start + 20, requests.count)])
+            do {
+                let fetched = try await ClaudeClient.describe(batch)
+                for request in batch {
+                    // Un titre absent de la réponse est noté « non reconnu », pour ne pas le redemander à chaque analyse.
+                    info[request.id] = fetched[request.id]
+                        ?? MediaInfo(known: false, synopsis: "", genres: [], originalTitle: nil, year: nil, fetchedAt: Date())
+                }
+                // Sous le pilote de test, les fiches restent en mémoire, sauf essai d'écriture explicite.
+                let env = ProcessInfo.processInfo.environment
+                if env["LUMIO_DEBUG"] == nil || env["LUMIO_DEBUG_WRITE"] == "1",
+                   let data = try? JSONEncoder().encode(info) { try? data.write(to: infoFile, options: .atomic) }
+            } catch {
+                describeError = error.localizedDescription
+                describeSuspended = true
+                return
+            }
+        }
+    }
+
+    func clearInfo() {
+        info = [:]
+        try? FileManager.default.removeItem(at: infoFile)
     }
 
     /// Parcourt les dossiers en lecture seule. Ignore les paquets (.app…), les fichiers cachés,

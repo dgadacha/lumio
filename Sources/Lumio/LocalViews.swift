@@ -68,7 +68,7 @@ struct LocalLibraryView: View {
                             LocalCard(path: movie.path, title: movie.title,
                                       subtitle: [movie.year.map(String.init), Fmt.bytes(movie.size)].compactMap { $0 }.joined(separator: " · "),
                                       progress: local.position(for: movie.path)?.progress, preferCover: true,
-                                      symbol: "play.circle.fill") { Task { await state.playLocal(path: movie.path) } }
+                                      symbol: "info.circle.fill") { state.localMovie = movie }
                         }
                     }
                 }
@@ -178,93 +178,293 @@ struct LocalCard: View {
     }
 }
 
-// MARK: - Page d'une série
+// MARK: - Fiche d'une série ou d'un film
 
-struct LocalSeriesView: View {
-    let series: LocalSeries
+/// Ce que la fiche présente.
+enum LocalItem: Hashable {
+    case series(LocalSeries)
+    case movie(LocalMovie)
+
+    var id: String {
+        switch self {
+        case .series(let series): return series.id
+        case .movie(let movie): return movie.path
+        }
+    }
+}
+
+/// Fiche en surimpression : bandeau, lecture, synopsis rédigé par Claude, puis saisons et épisodes.
+/// Se ferme par la croix, la touche Échap ou un clic en dehors du panneau.
+struct LocalDetailOverlay: View {
+    let item: LocalItem
     @EnvironmentObject var state: AppState
     @EnvironmentObject var local: LocalLibrary
     @State private var season: Int?
+    @State private var audioLanguages: [String] = []
 
-    private var shownSeason: Int { season ?? local.nextUp(in: series)?.season ?? series.seasons.first ?? 1 }
+    private func close() {
+        state.localSeries = nil
+        state.localMovie = nil
+    }
 
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
-                header
-
-                VStack(alignment: .leading, spacing: 16) {
-                    if series.seasons.count > 1 {
-                        HStack(spacing: 8) {
-                            ForEach(series.seasons, id: \.self) { number in
-                                Chip(label: "Saison \(number)", detail: "\(series.episodes(in: number).count)",
-                                     selected: shownSeason == number) { season = number }
-                            }
-                        }
-                    } else {
-                        Text("Saison \(shownSeason)").font(.system(size: 19, weight: .bold))
-                    }
-                    VStack(spacing: 2) {
-                        ForEach(series.episodes(in: shownSeason)) { episode in
-                            LocalEpisodeRow(series: series, episode: episode)
-                        }
-                    }
-                }
-                .padding(.horizontal, 48)
-            }
-            .padding(.bottom, 60)
+    private var title: String {
+        switch item {
+        case .series(let series): return series.title
+        case .movie(let movie): return movie.title
         }
     }
 
-    private var header: some View {
-        let next = local.nextUp(in: series)
-        let started = next.flatMap { local.position(for: $0.path) }?.progress != nil
-            || series.episodes.contains { local.position(for: $0.path) != nil }
-        return ZStack(alignment: .bottomLeading) {
-            // Une image de l'épisode à venir sert de décor.
-            LocalThumb(path: next?.path ?? series.episodes.first?.path ?? "")
-                .blur(radius: 18)
-                .scaleEffect(1.15)
-            LinearGradient(colors: [.black.opacity(0.9), .black.opacity(0.45), .black.opacity(0.2)], startPoint: .leading, endPoint: .trailing)
-            LinearGradient(colors: [.clear, Theme.bg.opacity(0.6), Theme.bg], startPoint: .center, endPoint: .bottom)
+    private var info: MediaInfo? {
+        switch item {
+        case .series(let series): return local.info(for: series)
+        case .movie(let movie): return local.info(for: movie)
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Button { state.localSeries = nil } label: {
-                    Label("Films et séries", systemImage: "chevron.left")
-                        .font(.system(size: 12.5, weight: .bold)).foregroundStyle(.white.opacity(0.85)).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Text(series.title)
-                    .font(.system(size: 46, weight: .heavy)).lineLimit(2).minimumScaleFactor(0.6)
-                    .shadow(color: .black.opacity(0.6), radius: 10, y: 2)
-                Text([series.year.map(String.init),
-                      series.seasons.count > 1 ? "\(series.seasons.count) saisons" : nil,
-                      "\(series.episodes.count) épisodes", Fmt.bytes(series.totalSize)]
-                    .compactMap { $0 }.joined(separator: "  ·  "))
-                    .font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.85))
-                if let next {
-                    HStack(spacing: 12) {
-                        Button { Task { await state.playLocal(path: next.path) } } label: {
-                            HStack(spacing: 8) {
-                                if state.localPreparing == next.path { ProgressView().controlSize(.small).tint(.black) }
-                                else { Image(systemName: "play.fill") }
-                                Text(started ? "Reprendre S\(next.season) : É\(next.number)" : "Lecture")
+    private var infoKey: String {
+        switch item {
+        case .series(let series): return series.id
+        case .movie(let movie): return LocalLibrary.infoKey(movie)
+        }
+    }
+
+    /// Fichier dont on tire le décor et qui sera lu par le bouton principal.
+    private var mainPath: String? {
+        switch item {
+        case .series(let series): return local.nextUp(in: series)?.path ?? series.episodes.first?.path
+        case .movie(let movie): return movie.path
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.black.opacity(0.72).ignoresSafeArea().onTapGesture { close() }
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        header
+                        VStack(alignment: .leading, spacing: 24) {
+                            about
+                            if case .series(let series) = item {
+                                Divider().overlay(Color.white.opacity(0.12))
+                                episodes(of: series)
                             }
                         }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(state.localPreparing != nil)
-                        if let title = next.title {
-                            Text(title).font(.system(size: 13.5, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
-                        }
+                        .padding(.horizontal, 40)
+                        .padding(.top, 10)
+                        .padding(.bottom, 34)
                     }
-                    .padding(.top, 4)
+                    .frame(width: 880)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: .black.opacity(0.7), radius: 40, y: 20)
+                    // Un clic dans le panneau ne doit pas remonter jusqu'à la zone qui ferme la fiche.
+                    .onTapGesture {}
+                    .padding(.vertical, 44)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .top)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
                 }
             }
-            .padding(.horizontal, 48)
-            .padding(.bottom, 30)
         }
-        .frame(height: 380)
+        .onExitCommand { close() }
+        .task(id: item.id) {
+            if let path = mainPath, let probe = await MediaInspector.shared.probe(path) {
+                var seen = Set<String>()
+                audioLanguages = probe.audio.compactMap(\.language).map(Fmt.language).filter { seen.insert($0).inserted }
+            }
+        }
+    }
+
+    // MARK: Bandeau
+
+    private var header: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let path = mainPath {
+                LocalThumb(path: path)
+            } else {
+                Theme.surface2
+            }
+            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .leading, endPoint: .center)
+            LinearGradient(colors: [.clear, Theme.surface.opacity(0.55), Theme.surface], startPoint: .center, endPoint: .bottom)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text(title)
+                    .font(.system(size: 34, weight: .heavy)).lineLimit(2).minimumScaleFactor(0.6)
+                    .shadow(color: .black.opacity(0.7), radius: 8)
+                playButton
+            }
+            .padding(.horizontal, 40)
+            .padding(.bottom, 22)
+        }
+        .frame(height: 440)
         .clipped()
+        .overlay(alignment: .topTrailing) {
+            IconButton(symbol: "xmark", size: 14) { close() }.padding(16)
+        }
+    }
+
+    @ViewBuilder
+    private var playButton: some View {
+        switch item {
+        case .series(let series):
+            if let next = local.nextUp(in: series) {
+                let started = series.episodes.contains { local.position(for: $0.path) != nil }
+                HStack(spacing: 12) {
+                    mainButton(path: next.path, label: started ? "Reprendre S\(next.season) : É\(next.number)" : "Lecture")
+                    if started {
+                        Text(next.label).font(.system(size: 13.5, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                    }
+                }
+            }
+        case .movie(let movie):
+            let resume = local.position(for: movie.path).map { $0.progress != nil && !$0.finished } ?? false
+            mainButton(path: movie.path, label: resume ? "Reprendre" : "Lecture")
+        }
+    }
+
+    private func mainButton(path: String, label: String) -> some View {
+        Button { Task { await state.playLocal(path: path) } } label: {
+            HStack(spacing: 8) {
+                if state.localPreparing == path { ProgressView().controlSize(.small).tint(.black) }
+                else { Image(systemName: "play.fill") }
+                Text(label)
+            }
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        .disabled(state.localPreparing != nil)
+    }
+
+    // MARK: À propos
+
+    private var about: some View {
+        HStack(alignment: .top, spacing: 36) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    if let year = year {
+                        Text(String(year)).foregroundStyle(.green).fontWeight(.bold)
+                    }
+                    ForEach(facts, id: \.self) { fact in Text(fact) }
+                }
+                .font(.system(size: 13.5))
+
+                synopsis
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 9) {
+                if let genres = info?.genres, !genres.isEmpty {
+                    sideLine("Genres", genres.joined(separator: ", "))
+                }
+                if let original = info?.originalTitle {
+                    sideLine("Titre original", original)
+                }
+                if !audioLanguages.isEmpty {
+                    sideLine("Audio", audioLanguages.joined(separator: ", "))
+                }
+                sideLine("Taille", Fmt.bytes(totalSize))
+            }
+            .frame(width: 250, alignment: .leading)
+        }
+    }
+
+    private var year: Int? {
+        switch item {
+        case .series(let series): return series.year ?? info?.year
+        case .movie(let movie): return movie.year ?? info?.year
+        }
+    }
+
+    private var facts: [String] {
+        switch item {
+        case .series(let series):
+            let seasons = series.seasons.count
+            return [seasons > 1 ? "\(seasons) saisons" : "1 saison", "\(series.episodes.count) épisodes"]
+        case .movie(let movie):
+            return [URL(fileURLWithPath: movie.path).pathExtension.uppercased()]
+        }
+    }
+
+    private var totalSize: Int64 {
+        switch item {
+        case .series(let series): return series.totalSize
+        case .movie(let movie): return movie.size
+        }
+    }
+
+    @ViewBuilder
+    private var synopsis: some View {
+        if let info, info.known {
+            Text(info.synopsis)
+                .font(.system(size: 14))
+                .foregroundStyle(.white.opacity(0.88))
+                .lineSpacing(4)
+                .textSelection(.enabled)
+            Label("Résumé rédigé par Claude, de mémoire : il peut contenir des erreurs.", systemImage: "sparkles")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.faint)
+        } else if local.describing {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Claude rédige la description…").font(.system(size: 13)).foregroundStyle(Theme.dim)
+            }
+        } else if let error = local.describeError {
+            synopsisNote(error, action: "Réessayer")
+        } else if info != nil {
+            synopsisNote("Claude n'a pas reconnu ce titre avec certitude, et n'a donc rien rédigé.", action: "Redemander")
+        } else if !local.describeEnabled {
+            Text("Les descriptions par Claude sont désactivées dans Réglages.")
+                .font(.system(size: 13)).foregroundStyle(Theme.dim)
+        } else if !APIKeyStore.hasKey {
+            Text("Ajoutez une clé API Claude dans Réglages pour obtenir une description.")
+                .font(.system(size: 13)).foregroundStyle(Theme.dim)
+        } else {
+            synopsisNote("Pas encore de description.", action: "Demander à Claude")
+        }
+    }
+
+    private func synopsisNote(_ text: String, action: String) -> some View {
+        HStack(spacing: 12) {
+            Text(text).font(.system(size: 13)).foregroundStyle(Theme.dim)
+            Button(action) { Task { await local.fetchMissingInfo(refresh: [infoKey]) } }
+                .buttonStyle(.plain).font(.system(size: 12.5, weight: .bold)).foregroundStyle(.white)
+        }
+    }
+
+    private func sideLine(_ label: String, _ value: String) -> some View {
+        (Text("\(label) : ").foregroundStyle(Theme.faint) + Text(value).foregroundStyle(.white.opacity(0.85)))
+            .font(.system(size: 12.5))
+            .lineLimit(3)
+    }
+
+    // MARK: Épisodes
+
+    private func episodes(of series: LocalSeries) -> some View {
+        let shown = season ?? local.nextUp(in: series)?.season ?? series.seasons.first ?? 1
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Épisodes").font(.system(size: 21, weight: .bold))
+                Spacer()
+                if series.seasons.count > 1 {
+                    Menu {
+                        ForEach(series.seasons, id: \.self) { number in
+                            Button("Saison \(number) (\(series.episodes(in: number).count) épisodes)") { season = number }
+                        }
+                    } label: {
+                        Text("Saison \(shown)").font(.system(size: 14, weight: .semibold))
+                    }
+                    .menuStyle(.borderedButton)
+                    .fixedSize()
+                } else {
+                    Text("Saison \(shown)").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.dim)
+                }
+            }
+            VStack(spacing: 2) {
+                ForEach(series.episodes(in: shown)) { episode in
+                    LocalEpisodeRow(series: series, episode: episode)
+                }
+            }
+        }
     }
 }
 

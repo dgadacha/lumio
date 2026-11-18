@@ -56,6 +56,22 @@ struct SettingsView: View {
                         .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
+                Divider().overlay(Color.white.opacity(0.1))
+                Toggle(isOn: $local.describeEnabled) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Descriptions rédigées par Claude").font(.system(size: 13.5, weight: .semibold))
+                        Text(local.describing ? "Claude rédige les fiches…"
+                             : (local.describeError ?? "\(local.info.values.filter(\.known).count) fiche(s) en cache · chaque titre n'est demandé qu'une fois"))
+                            .font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(2)
+                    }
+                }
+                .toggleStyle(.switch)
+                Text("Utilise votre clé API Claude (section ci-dessous). Seuls le titre, l'année et le type (film ou série) de chaque œuvre sont envoyés à l'API d'Anthropic, jamais les noms de fichiers ni les chemins. Les résumés sont écrits de mémoire par le modèle et peuvent contenir des erreurs.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.faint)
+                HStack {
+                    Button("Effacer les fiches en cache") { local.clearInfo() }.disabled(local.info.isEmpty)
+                    Spacer()
+                }
                 HStack {
                     Button("Ajouter un dossier…") { addScanFolder() }
                     Button("Rétablir par défaut") { local.folders = LocalLibrary.defaultFolders }

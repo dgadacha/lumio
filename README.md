@@ -26,12 +26,12 @@ dans le format de votre choix pour regarder hors ligne.
 | **Accueil en rangées** | Une bannière « À la une », puis des rangées horizontales par thème, modifiables dans les réglages. |
 | **Catégories** | Un onglet pour explorer par thème (documentaires, histoire, musique live…) ou par chaîne (ARTE, France Culture, CNRS…). |
 | **Recherche** | Par mots-clés, ou en collant le lien d'une vidéo, d'une playlist ou d'une chaîne. |
-| **Films et séries du disque** | Lumio analyse vos dossiers, range vos fichiers par série et par saison, et les lit, MKV compris. |
+| **Films et séries du disque** | Lumio analyse vos dossiers, range vos fichiers par série et par saison, et les lit, MKV compris. Chaque œuvre a sa fiche, avec synopsis et genres. |
 | **Lecture immédiate** | Un bouton « Regarder » lit la vidéo en streaming, sans rien télécharger, avec reprise là où vous vous êtes arrêté. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
 | **Lecteur intégré** | Sous-titres, vitesse de lecture, qualité en streaming, plein écran et raccourcis clavier. |
-| **Suggestions par Claude** | En option : des rangées « Pour vous » proposées par l'IA d'après ce que vous regardez. |
+| **Claude, en option** | Avec votre clé API : des rangées « Pour vous » d'après ce que vous regardez, et les synopsis de vos films et séries. |
 | **File d'attente** | Progression, débit, temps restant et annulation, deux téléchargements à la fois. |
 
 ### Choisir le format, la résolution et les sous-titres
@@ -74,7 +74,7 @@ connexion et dans la résolution choisie, 4K comprise.
 Lumio peut demander à [Claude](https://www.anthropic.com/claude) trois rangées « Pour vous » : deux qui
 prolongent vos goûts, une découverte. Chaque rangée indique pourquoi elle vous est proposée.
 
-La fonction est **désactivée par défaut**. Pour l'activer, ouvrez **Réglages → Suggestions par Claude**,
+Les suggestions sont **désactivées par défaut**. Pour les activer, ouvrez **Réglages → Suggestions par Claude**,
 collez une clé API Anthropic (à créer sur [console.anthropic.com](https://console.anthropic.com)) et
 activez l'interrupteur.
 
@@ -91,7 +91,8 @@ activez l'interrupteur.
 
 L'onglet **Films et séries** présente les vidéos que vous possédez déjà, rangées comme sur une
 plateforme : une page par série, ses saisons, la liste des épisodes avec vignette, durée et
-progression, un bouton « Reprendre » et l'épisode suivant dans le lecteur.
+progression, un bouton « Reprendre » et l'épisode suivant dans le lecteur. Chaque série et chaque
+film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, saisons et épisodes.
 
 - **Analyse** : Lumio parcourt les dossiers Téléchargements et Vidéos, plus ceux que vous ajoutez dans
   les réglages. Il reconnaît les épisodes d'après leur nom (`S01E02`, `1x02`, dossier « Saison 1 »…),
@@ -104,7 +105,13 @@ progression, un bouton « Reprendre » et l'épisode suivant dans le lecteur.
   version française…) et ses sous-titres texte. Les sous-titres en image (PGS, VobSub) ne sont pas
   pris en charge.
 - **Vignettes** : elles sont tirées des fichiers eux-mêmes, ou de l'affiche qu'ils contiennent.
-  Aucune information n'est demandée à un service en ligne, et rien de cet onglet n'est envoyé à Claude.
+- **Descriptions par Claude** (avec votre clé API) : Claude rédige le synopsis et les
+  genres de chaque œuvre. Contrairement aux suggestions, cette option est **active dès qu'une clé est
+  enregistrée** : les titres partent à la première analyse, sans clic supplémentaire. Seuls le titre, l'année et le type (film ou série) sont envoyés à l'API
+  d'Anthropic, jamais les noms de fichiers ni les chemins. Chaque fiche est mise en cache : un titre
+  n'est demandé qu'une fois. Les résumés sont écrits de mémoire par le modèle et peuvent contenir des
+  erreurs ; s'il ne reconnaît pas un titre, la fiche reste vide plutôt qu'inventée. L'option se
+  désactive dans les réglages.
 
 Au premier accès, macOS demande d'autoriser Lumio à lire le dossier Téléchargements.
 
@@ -152,7 +159,7 @@ version. Les téléchargements lancés pendant une mise à jour patientent quelq
 | Quoi | Où |
 |---|---|
 | Vidéos, miniatures et sous-titres `.vtt` | `~/Movies/Lumio/` (modifiable dans les réglages) |
-| Index de la bibliothèque, historique de lecture, caches | `~/Library/Application Support/Lumio/` |
+| Index de la bibliothèque, historique et positions de lecture, fiches rédigées par Claude | `~/Library/Application Support/Lumio/` |
 | Copies temporaires des MKV, vignettes et sous-titres extraits | `~/Library/Caches/Lumio/` |
 | Copie privée de yt-dlp | `~/Library/Application Support/Lumio/engine/` |
 
@@ -168,14 +175,14 @@ pour les téléchargements.
 |---|---|
 | `Engine.swift` | Appels yt-dlp (recherche, formats, mise à jour du moteur) et lecture des sous-titres WebVTT |
 | `Models.swift` | Modèles, et traduction des options en arguments yt-dlp |
-| `Claude.swift` | Appel à l'API Claude (sortie JSON structurée) et stockage de la clé dans le Trousseau |
+| `Claude.swift` | Appels à l'API Claude (suggestions, fiches des films et séries) et stockage de la clé dans le Trousseau |
 | `Stores.swift` | Bibliothèque, file de téléchargements, état de l'app |
 | `Categories.swift` | Catalogue des catégories (thèmes et chaînes), onglet et page d'une catégorie |
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |
 | `MediaParser.swift` | Classement des fichiers en séries, saisons, épisodes et films, d'après leur nom |
-| `LocalMedia.swift` | Analyse des dossiers, préparation à la lecture (ffmpeg), vignettes, positions |
-| `LocalViews.swift` | Onglet Films et séries, page d'une série |
+| `LocalMedia.swift` | Analyse des dossiers, préparation à la lecture (ffmpeg), vignettes, positions, cache des fiches |
+| `LocalViews.swift` | Onglet Films et séries, fiche d'une série ou d'un film |
 | `Player.swift` | Lecteur, pour un fichier local comme pour un flux |
 | `Settings.swift` | Réglages |
 | `Debug.swift` | Pilote de test, inactif sans la variable `LUMIO_DEBUG` |

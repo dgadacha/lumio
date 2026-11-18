@@ -394,6 +394,8 @@ final class AppState: ObservableObject {
     @Published var streamError: String?
     /// Série du disque dont la page est ouverte.
     @Published var localSeries: LocalSeries?
+    /// Film du disque dont la fiche est ouverte.
+    @Published var localMovie: LocalMovie?
     /// Chemin du fichier local en cours de préparation à la lecture.
     @Published var localPreparing: String?
     private var localProcess: Process?
@@ -674,6 +676,8 @@ final class AppState: ObservableObject {
             let saved = local.position(for: path)
             let resume = saved.map { $0.finished ? 0 : $0.position } ?? 0
             detail = nil
+            localSeries = nil
+            localMovie = nil
             playing = PlayableMedia(localPath: path, title: title, detailLine: detailLine, prepared: prepared,
                                     startPosition: resume, nextPath: local.episode(after: path)?.episode.path)
         } catch {

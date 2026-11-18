@@ -130,6 +130,13 @@ enum DebugDriver {
                     for series in catalog.series {
                         log("  série: \(series.id) saisons=\(series.seasons) épisodes=\(series.episodes.count)")
                     }
+                case "localmeta":
+                    // Demande les fiches manquantes. À n'utiliser qu'avec LUMIO_CLAUDE_ENDPOINT (faux serveur).
+                    await state.local.fetchMissingInfo()
+                    log("localmeta: fiches=\(state.local.info.count) reconnues=\(state.local.info.values.filter(\.known).count) erreur=\(state.local.describeError ?? "aucune")")
+                    for (id, info) in state.local.info.sorted(by: { $0.key < $1.key }) {
+                        log("  \(id): reconnue=\(info.known) genres=\(info.genres) année=\(info.year.map(String.init) ?? "-") texte=\(info.synopsis.count) caractères")
+                    }
                 case "localseries":
                     // localseries <clé> : ouvre la page d'une série.
                     state.tab = .local

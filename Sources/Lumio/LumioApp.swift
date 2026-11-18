@@ -39,12 +39,7 @@ struct RootView: View {
                     } else {
                         CategoriesView()
                     }
-                case .local:
-                    if let series = state.localSeries {
-                        LocalSeriesView(series: series).id(series.id)
-                    } else {
-                        LocalLibraryView()
-                    }
+                case .local: LocalLibraryView()
                 case .search: SearchView()
                 case .library: LibraryView()
                 case .downloads: DownloadsView()
@@ -54,6 +49,13 @@ struct RootView: View {
             .ignoresSafeArea()
 
             TopBar()
+
+            if let item = state.localSeries.map(LocalItem.series) ?? state.localMovie.map(LocalItem.movie) {
+                LocalDetailOverlay(item: item)
+                    .id(item.id)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    .zIndex(2)
+            }
 
             if let video = state.detail {
                 DetailOverlay(video: video)
@@ -87,6 +89,8 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.22), value: state.detail)
+        .animation(.easeOut(duration: 0.22), value: state.localSeries)
+        .animation(.easeOut(duration: 0.22), value: state.localMovie)
         .animation(.easeOut(duration: 0.25), value: state.playing)
         .alert("Lecture impossible", isPresented: Binding(get: { state.streamError != nil }, set: { if !$0 { state.streamError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -188,7 +192,8 @@ struct TopBar: View {
     private func tabLink(_ title: String, _ tab: AppState.Tab, badge: Int = 0) -> some View {
         Button {
             if tab == .categories { state.category = nil }
-            if tab == .local { state.localSeries = nil }
+            state.localSeries = nil
+            state.localMovie = nil
             state.tab = tab
         } label: {
             HStack(spacing: 6) {
