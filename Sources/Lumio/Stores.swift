@@ -1,0 +1,527 @@
+import SwiftUI
+import AVFoundation
+
+// MARK: - Bibliothèque hors ligne
+
+@MainActor
+final class Library: ObservableObject {
+    @Published private(set) var items: [LibraryItem] = []
+    private let file = Paths.support.appendingPathComponent("library.json")
+
+    init() {
+        guard let data = try? Data(contentsOf: file),
+              let decoded = try? JSONDecoder().decode([LibraryItem].self, from: data) else { return }
+        // Un fichier supprimé à la main dans le Finder disparaît de la bibliothèque.
+        items = decoded.filter { FileManager.default.fileExists(atPath: $0.mediaURL.path) }
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    func add(_ item: LibraryItem) {
+        items.insert(item, at: 0)
+        save()
+    }
+
+    func item(forVideo id: String) -> LibraryItem? {
+        items.first { $0.videoID == id }
+    }
+
+    func updatePosition(_ id: UUID, position: Double) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let duration = items[index].duration ?? 0
+        items[index].position = duration > 0 && position > duration * 0.96 ? 0 : position
+        items[index].lastPlayedAt = Date()
+        save()
+    }
+
+    /// Met le dossier à la corbeille (récupérable) et retire l'entrée.
+    func remove(_ item: LibraryItem) {
+        try? FileManager.default.trashItem(at: item.folderURL, resultingItemURL: nil)
+        items.removeAll { $0.id == item.id }
+        save()
+    }
+
+    var continueWatching: [LibraryItem] {
+        items.filter { $0.progress != nil }
+            .sorted { ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast) }
+    }
+
+    var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
+}
+
+// MARK: - Téléchargements
+
+@MainActor
+final class DownloadJob: ObservableObject, Identifiable {
+    enum State: Equatable { case queued, running, finishing, done, failed(String), cancelled }
+
+    let id = UUID()
+    let video: VideoSummary
+    let summaryText: String
+    let options: DownloadOptions
+    let expectedBytes: Int64?
+    let folder: URL
+
+    @Published var state: State = .queued
+    @Published var fraction: Double = 0
+    @Published var speed: Double?
+    @Published var eta: Double?
+    @Published var stage = "En attente"
+
+    fileprivate var process: Process?
+    fileprivate var completedBytes: Double = 0
+    fileprivate var lastDownloaded: Double = 0
+    fileprivate var lastTotal: Double = 0
+    fileprivate var mediaPath: String?
+    fileprivate var warnings: [String] = []
+
+    init(video: VideoSummary, summaryText: String, options: DownloadOptions, expectedBytes: Int64?) {
+        self.video = video
+        self.summaryText = summaryText
+        self.options = options
+        self.expectedBytes = expectedBytes
+        folder = Paths.downloads.appendingPathComponent("\(video.id)-\(UUID().uuidString.prefix(6))", isDirectory: true)
+    }
+
+    var isActive: Bool { state == .queued || state == .running || state == .finishing }
+
+    fileprivate func handle(line: String) {
+        if line.hasPrefix("PROG|") {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map { Double($0) }
+            guard parts.count >= 6, let downloaded = parts[1] else { return }
+            let total = parts[2] ?? parts[3] ?? 0
+            // Vidéo puis audio sont deux fichiers successifs : le compteur repart de zéro.
+            if downloaded < lastDownloaded || (total != lastTotal && lastTotal > 0 && downloaded < lastTotal * 0.5) {
+                completedBytes += lastTotal
+            }
+            lastDownloaded = downloaded
+            lastTotal = total
+            let done = completedBytes + downloaded
+            let whole = max(Double(expectedBytes ?? 0), completedBytes + total, 1)
+            fraction = min(0.99, done / whole)
+            speed = parts[4]
+            eta = parts[5]
+            stage = "Téléchargement"
+        } else if line.hasPrefix("PP|") {
+            let parts = line.split(separator: "|").map(String.init)
+            guard parts.count >= 3, parts[2] == "started" else { return }
+            let names: [String: String] = [
+                "Merger": "Assemblage vidéo et audio",
+                "ExtractAudio": "Extraction audio",
+                "EmbedSubtitle": "Intégration des sous-titres",
+                "EmbedThumbnail": "Intégration de la miniature",
+                "Metadata": "Écriture des métadonnées",
+                "SponsorBlock": "Analyse des segments sponsorisés",
+                "ModifyChapters": "Retrait des segments sponsorisés",
+                "SubtitlesConvertor": "Conversion des sous-titres",
+            ]
+            if let name = names[parts[1]] {
+                stage = name
+                if parts[1] != "SubtitlesConvertor" { state = .finishing; speed = nil; eta = nil }
+            }
+        } else if line.hasPrefix("FILE|") {
+            mediaPath = String(line.dropFirst(5))
+        } else if line.hasPrefix("WARNING:"), line.contains("subtitle") {
+            warnings.append(line)
+        }
+    }
+}
+
+@MainActor
+final class DownloadManager: ObservableObject {
+    @Published private(set) var jobs: [DownloadJob] = []
+    private let library: Library
+    private let maxConcurrent = 2
+
+    init(library: Library) { self.library = library }
+
+    var activeCount: Int { jobs.filter(\.isActive).count }
+
+    func job(forVideo id: String) -> DownloadJob? {
+        jobs.first { $0.video.id == id && $0.isActive }
+    }
+
+    func enqueue(video: VideoSummary, detail: VideoDetail, options: DownloadOptions) {
+        let job = DownloadJob(
+            video: detail.summary,
+            summaryText: detail.description,
+            options: options,
+            expectedBytes: detail.estimatedSize(options)
+        )
+        jobs.insert(job, at: 0)
+        pump()
+    }
+
+    func cancel(_ job: DownloadJob) {
+        guard job.isActive else { return }
+        job.state = .cancelled
+        job.stage = "Annulé"
+        // Le dossier est supprimé par run() une fois le processus réellement arrêté.
+        job.process?.terminate()
+        pump()
+    }
+
+    func clearFinished() {
+        jobs.removeAll { !$0.isActive }
+    }
+
+    private func pump() {
+        let running = jobs.filter { $0.state == .running || $0.state == .finishing }.count
+        guard running < maxConcurrent, let next = jobs.last(where: { $0.state == .queued }) else {
+            objectWillChange.send()
+            return
+        }
+        next.state = .running
+        next.stage = "Préparation"
+        Task { await run(next) }
+        pump()
+    }
+
+    private func run(_ job: DownloadJob) async {
+        try? FileManager.default.createDirectory(at: job.folder, withIntermediateDirectories: true)
+        var args = [
+            "--newline", "--progress", "--no-playlist", "--ignore-errors",
+            "--progress-template",
+            "download:PROG|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
+            "--progress-template", "postprocess:PP|%(progress.postprocessor)s|%(progress.status)s",
+            "--print", "after_move:FILE|%(filepath)s", "--no-simulate",
+            "--write-thumbnail", "--convert-thumbnails", "jpg",
+            "-P", job.folder.path, "-o", "%(title).100B [%(id)s].%(ext)s",
+        ]
+        args += job.options.arguments()
+        args.append(job.video.url)
+
+        let result: ProcResult
+        do {
+            result = try await Engine.run(
+                args,
+                onLine: { line in DispatchQueue.main.async { job.handle(line: line) } },
+                register: { process in DispatchQueue.main.async {
+                    job.process = process
+                    if job.state == .cancelled { process.terminate() }
+                } }
+            )
+        } catch {
+            job.state = .failed(error.localizedDescription)
+            pump()
+            return
+        }
+        // Laisse passer les dernières lignes déjà postées sur le fil principal.
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        guard job.state != .cancelled else {
+            try? FileManager.default.removeItem(at: job.folder)
+            return
+        }
+
+        guard let path = job.mediaPath, FileManager.default.fileExists(atPath: path) else {
+            job.state = .failed(Engine.lastError(result.err))
+            job.stage = "Échec"
+            try? FileManager.default.removeItem(at: job.folder)
+            pump()
+            return
+        }
+        await retryMissingSubtitles(job)
+        guard job.state != .cancelled else {
+            try? FileManager.default.removeItem(at: job.folder)
+            return
+        }
+        let item = await makeItem(job: job, mediaPath: path)
+        library.add(item)
+        job.fraction = 1
+        job.state = .done
+        let missing = missingSubtitles(job).count
+        job.stage = missing > 0 ? "Terminé — \(missing) sous-titre(s) refusé(s) par YouTube" : "Terminé"
+        pump()
+    }
+
+    private func subtitleCodes(in folder: URL) -> Set<String> {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return Set(files.filter { $0.hasSuffix(".vtt") }.compactMap { $0.dropLast(4).split(separator: ".").last.map(String.init) })
+    }
+
+    private func missingSubtitles(_ job: DownloadJob) -> [SubTrack] {
+        let present = subtitleCodes(in: job.folder)
+        return job.options.subtitles.filter { !present.contains($0.code) }
+    }
+
+    /// YouTube limite le débit des sous-titres (HTTP 429) de façon intermittente :
+    /// on retente les pistes manquantes, seules, après une pause.
+    private func retryMissingSubtitles(_ job: DownloadJob) async {
+        for delay in [6.0, 20.0] {
+            let missing = missingSubtitles(job)
+            guard !missing.isEmpty, job.state != .cancelled else { return }
+            job.state = .finishing
+            job.stage = "Nouvel essai pour \(missing.count) sous-titre(s)…"
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            var args = ["--skip-download", "--no-playlist", "--ignore-errors"]
+            if missing.contains(where: { !$0.auto }) { args.append("--write-subs") }
+            if missing.contains(where: { $0.auto }) { args.append("--write-auto-subs") }
+            args += [
+                "--sub-langs", missing.map(\.code).sorted().joined(separator: ","),
+                "--sub-format", "vtt/best", "--convert-subs", "vtt", "--sleep-subtitles", "3",
+                "-P", job.folder.path, "-o", "%(title).100B [%(id)s].%(ext)s", job.video.url,
+            ]
+            _ = try? await Engine.run(args, register: { process in DispatchQueue.main.async { job.process = process } })
+        }
+    }
+
+    private func makeItem(job: DownloadJob, mediaPath: String) async -> LibraryItem {
+        let media = URL(fileURLWithPath: mediaPath)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: job.folder.path)) ?? []
+        let subtitles = files.filter { $0.hasSuffix(".vtt") }.sorted().map { name -> LocalSubtitle in
+            let code = name.dropLast(4).split(separator: ".").last.map(String.init) ?? "?"
+            return LocalSubtitle(code: code, file: name)
+        }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: mediaPath))?[.size] as? NSNumber)?.int64Value ?? 0
+        let asset = AVURLAsset(url: media)
+        var playable = (try? await asset.load(.isPlayable)) ?? false
+        if playable, job.options.kind == .video {
+            // isPlayable peut être vrai pour un conteneur lisible dont le codec vidéo ne l'est pas.
+            let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+            if let track = tracks.first {
+                playable = (try? await track.load(.isPlayable)) ?? false
+            } else {
+                playable = false
+            }
+        }
+        return LibraryItem(
+            id: UUID(),
+            videoID: job.video.id,
+            title: job.video.title,
+            channel: job.video.channel,
+            duration: job.video.duration,
+            summaryText: String(job.summaryText.prefix(600)),
+            folder: job.folder.path,
+            mediaFile: media.lastPathComponent,
+            thumbFile: files.first { $0.hasSuffix(".jpg") },
+            subtitles: subtitles,
+            kind: job.options.kind,
+            quality: job.options.qualityLabel,
+            size: size,
+            addedAt: Date(),
+            playable: playable
+        )
+    }
+}
+
+// MARK: - État de l'application
+
+@MainActor
+final class AppState: ObservableObject {
+    enum Tab: Hashable { case home, search, library, downloads, settings }
+
+    @Published var tab: Tab = .home
+    @Published var rows: [HomeRow] = []
+    @Published var featured: VideoSummary?
+    @Published var loadingHome = false
+    @Published var homeError: String?
+
+    @Published var query = ""
+    @Published var results: [VideoSummary] = []
+    @Published var searching = false
+    @Published var searchError: String?
+    @Published var searchedQuery = ""
+
+    @Published var detail: VideoSummary?
+    @Published var playing: LibraryItem?
+
+    @Published var engine = EngineInfo()
+    @Published var engineChecked = false
+    @Published var engineBusy = false
+    @Published var engineLog = ""
+
+    let library: Library
+    let downloads: DownloadManager
+    private var detailCache: [String: VideoDetail] = [:]
+    private var searchToken = 0
+    private let homeCache = Paths.support.appendingPathComponent("home.json")
+
+    static let defaultRows = """
+    Documentaires à couper le souffle | documentaire nature 4k
+    Science et espace | documentaire espace univers
+    Concerts et sessions live | concert live complet
+    Bandes-annonces | bande annonce officielle vf
+    Tech et gadgets | test high-tech
+    En cuisine | recette de chef
+    Évasion | voyage 4k drone
+    """
+
+    init() {
+        let library = Library()
+        self.library = library
+        downloads = DownloadManager(library: library)
+        loadCachedHome()
+        Task {
+            await refreshEngine()
+            await loadHome(force: false)
+        }
+        DebugDriver.startIfRequested(self)
+    }
+
+    // MARK: Moteur
+
+    func refreshEngine() async {
+        engine = await Engine.info()
+        engineChecked = true
+    }
+
+    func updateEngine() {
+        guard !engineBusy else { return }
+        engineBusy = true
+        engineLog = "Préparation…"
+        Task {
+            do {
+                try await Engine.installOrUpdate { line in
+                    DispatchQueue.main.async { self.engineLog = line }
+                }
+                await refreshEngine()
+                engineLog = "Moteur à jour (\(engine.version ?? "?"))"
+                if rows.isEmpty { await loadHome(force: true) }
+            } catch {
+                engineLog = "Échec : \(error.localizedDescription)"
+            }
+            engineBusy = false
+        }
+    }
+
+    // MARK: Accueil
+
+    private struct HomeCache: Codable {
+        let date: Date
+        let config: String
+        let rows: [HomeRow]
+    }
+
+    var rowsConfig: String {
+        UserDefaults.standard.string(forKey: "homeRows") ?? Self.defaultRows
+    }
+
+    private func configuredRows() -> [(title: String, query: String)] {
+        var list: [(String, String)] = []
+        if let last = recentSearches.first {
+            list.append(("Parce que vous avez cherché « \(last) »", last))
+        }
+        for line in rowsConfig.split(separator: "\n") {
+            let parts = line.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard let title = parts.first, !title.isEmpty else { continue }
+            list.append((title, parts.count > 1 && !parts[1].isEmpty ? parts[1] : title))
+        }
+        return list
+    }
+
+    private func loadCachedHome() {
+        guard let data = try? Data(contentsOf: homeCache),
+              let cache = try? JSONDecoder().decode(HomeCache.self, from: data) else { return }
+        rows = cache.rows
+        pickFeatured()
+    }
+
+    private func pickFeatured() {
+        featured = rows.first(where: { !$0.title.hasPrefix("Parce que") })?.items.prefix(6).randomElement()
+            ?? rows.first?.items.first
+    }
+
+    func loadHome(force: Bool) async {
+        guard !loadingHome else { return }
+        if !force,
+           let data = try? Data(contentsOf: homeCache),
+           let cache = try? JSONDecoder().decode(HomeCache.self, from: data),
+           cache.config == rowsConfig, Date().timeIntervalSince(cache.date) < 4 * 3600, !cache.rows.isEmpty {
+            return
+        }
+        guard engine.path != nil else { return }
+        loadingHome = true
+        homeError = nil
+        let wanted = configuredRows()
+        var loaded: [Int: HomeRow] = [:]
+        var firstError: String?
+        // Trois recherches de front : assez rapide sans bousculer YouTube.
+        for chunk in stride(from: 0, to: wanted.count, by: 3) {
+            await withTaskGroup(of: (Int, HomeRow?, String?).self) { group in
+                for index in chunk..<min(chunk + 3, wanted.count) {
+                    let (title, query) = wanted[index]
+                    group.addTask {
+                        do {
+                            let items = try await Engine.search(query, limit: 18)
+                            return (index, HomeRow(title: title, query: query, items: items), nil)
+                        } catch {
+                            return (index, nil, error.localizedDescription)
+                        }
+                    }
+                }
+                for await (index, row, error) in group {
+                    if let row, !row.items.isEmpty { loaded[index] = row }
+                    if let error, firstError == nil { firstError = error }
+                }
+            }
+            let ordered = loaded.keys.sorted().compactMap { loaded[$0] }
+            if !ordered.isEmpty {
+                rows = ordered
+                if featured == nil || force { pickFeatured() }
+            }
+        }
+        loadingHome = false
+        if loaded.isEmpty {
+            homeError = firstError ?? "Aucun résultat"
+        } else if let data = try? JSONEncoder().encode(HomeCache(date: Date(), config: rowsConfig, rows: rows)) {
+            try? data.write(to: homeCache, options: .atomic)
+        }
+    }
+
+    // MARK: Recherche
+
+    var recentSearches: [String] {
+        UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
+    }
+
+    func runSearch() {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        tab = .search
+        searching = true
+        searchError = nil
+        searchedQuery = text
+        searchToken += 1
+        let token = searchToken
+        if !text.hasPrefix("http") {
+            var recent = recentSearches.filter { $0.caseInsensitiveCompare(text) != .orderedSame }
+            recent.insert(text, at: 0)
+            UserDefaults.standard.set(Array(recent.prefix(8)), forKey: "recentSearches")
+        }
+        Task {
+            do {
+                let found = try await Engine.search(text, limit: 40)
+                guard token == searchToken else { return }
+                results = found
+                // Une URL de vidéo unique ouvre directement sa fiche.
+                if text.hasPrefix("http"), found.count == 1 { detail = found[0] }
+            } catch {
+                guard token == searchToken else { return }
+                results = []
+                searchError = error.localizedDescription
+            }
+            searching = false
+        }
+    }
+
+    // MARK: Détail et lecture
+
+    func loadDetail(_ video: VideoSummary) async throws -> VideoDetail {
+        if let cached = detailCache[video.id] { return cached }
+        let detail = try await Engine.detail(for: video)
+        detailCache[video.id] = detail
+        return detail
+    }
+
+    func play(_ item: LibraryItem) {
+        if item.playable {
+            detail = nil
+            playing = item
+        } else {
+            NSWorkspace.shared.open(item.mediaURL)
+        }
+    }
+}
