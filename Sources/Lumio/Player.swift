@@ -138,6 +138,13 @@ final class PlayerModel: ObservableObject {
     var onNext: () -> Void = {}
     private var endObserver: NSObjectProtocol?
     private var countdownTask: Task<Void, Never>?
+    /// Position pointée sur la barre de progression (0 à 1), nulle hors survol.
+    @Published var hoverFraction: Double?
+    /// Image du film à l'endroit pointé ; reste nulle en streaming, où seule l'heure s'affiche.
+    @Published var previewImage: NSImage?
+    private var previewGenerator: AVAssetImageGenerator?
+    private var previewCache: [Int: NSImage] = [:]
+    private var previewTask: Task<Void, Never>?
     @Published var audioChoices: [AudioChoice] = []
     @Published var audioChoice: Int?
     private var audioGroup: AVMediaSelectionGroup?
@@ -159,6 +166,16 @@ final class PlayerModel: ObservableObject {
         // Les sous-titres sont dessinés par l'app : on coupe ceux intégrés au fichier pour éviter le doublon.
         player.appliesMediaSelectionCriteriaAutomatically = false
         player.replaceCurrentItem(with: playerItem)
+        // Le générateur d'images ne sait lire qu'un fichier : pas d'aperçu pour un flux en streaming.
+        if !media.isStream, media.kind == .video {
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            // Tolérance large : on prend l'image clé la plus proche, ce qui est quasi instantané.
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 3, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 3, preferredTimescale: 600)
+            previewGenerator = generator
+        }
         let item = playerItem
         Task {
             if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
@@ -213,6 +230,10 @@ final class PlayerModel: ObservableObject {
             self?.pokeControls()
         }
         DebugDriver.playerSeekTo = { [weak self] seconds in self?.seek(to: seconds) }
+        DebugDriver.playerHover = { [weak self] fraction in
+            self?.pokeControls()
+            self?.hover(fraction: fraction)
+        }
         DebugDriver.playerSeekNearEnd = { [weak self] in
             guard let self, self.duration > 10 else { return }
             self.seek(to: self.duration - 4)
@@ -377,6 +398,32 @@ final class PlayerModel: ObservableObject {
         }
     }
 
+    /// Survol de la barre : affiche l'heure pointée et, pour un fichier, l'image correspondante.
+    func hover(fraction: Double?) {
+        hoverFraction = fraction
+        previewTask?.cancel()
+        guard let fraction, duration > 0, let generator = previewGenerator else {
+            if fraction == nil { previewImage = nil }
+            return
+        }
+        // Une image par tranche de 5 secondes suffit, et évite de redemander la même sans cesse.
+        let bucket = Int(fraction * duration / 5)
+        if let cached = previewCache[bucket] {
+            previewImage = cached
+            return
+        }
+        generator.cancelAllCGImageGeneration()
+        previewTask = Task { [weak self] in
+            let time = CMTime(seconds: Double(bucket) * 5 + 2.5, preferredTimescale: 600)
+            guard let result = try? await generator.image(at: time), !Task.isCancelled, let self else { return }
+            let image = NSImage(cgImage: result.image, size: .zero)
+            if self.previewCache.count > 120 { self.previewCache.removeAll() }
+            self.previewCache[bucket] = image
+            // L'utilisateur a pu bouger entre-temps : on n'affiche que si la tranche est toujours la bonne.
+            if let current = self.hoverFraction, Int(current * self.duration / 5) == bucket { self.previewImage = image }
+        }
+    }
+
     /// Fin de l'épisode : s'il y en a un suivant, il démarre après un court compte à rebours annulable.
     private func reachedEnd() {
         isPlaying = false
@@ -428,6 +475,8 @@ final class PlayerModel: ObservableObject {
         hideWork?.cancel()
         subtitleTask?.cancel()
         countdownTask?.cancel()
+        previewTask?.cancel()
+        previewGenerator?.cancelAllCGImageGeneration()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
         player.pause()
@@ -589,6 +638,27 @@ struct PlayerView: View {
         state.playing = nil
     }
 
+    /// Aperçu de l'endroit pointé sur la barre : l'image s'il y en a une, et l'heure.
+    private func previewCard(seconds: Double) -> some View {
+        VStack(spacing: 6) {
+            if let image = model.previewImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 200, height: 114)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.85), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.6), radius: 10, y: 4)
+            }
+            Text(Fmt.duration(seconds).isEmpty ? "0:00" : Fmt.duration(seconds))
+                .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 4))
+        }
+        .fixedSize()
+    }
+
     private func nextCard(_ countdown: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Épisode suivant dans \(countdown) s").font(.system(size: 13.5, weight: .semibold))
@@ -620,7 +690,21 @@ struct PlayerView: View {
             VStack(spacing: 10) {
                 // Barre de progression d'un trait, avec le temps restant à droite.
                 HStack(spacing: 12) {
-                    Scrubber(value: model.time, total: model.duration) { model.seek(to: $0); model.pokeControls() }
+                    Scrubber(value: model.time, total: model.duration, onHover: { model.hover(fraction: $0) }) {
+                        model.seek(to: $0); model.pokeControls()
+                    }
+                    .overlay(alignment: .topLeading) {
+                        GeometryReader { geo in
+                            if let fraction = model.hoverFraction, model.duration > 0 {
+                                // La carte suit le pointeur, sans jamais dépasser les bords de la barre.
+                                let half: CGFloat = model.previewImage == nil ? 34 : 104
+                                previewCard(seconds: fraction * model.duration)
+                                    .position(x: min(max(geo.size.width * fraction, half), max(geo.size.width - half, half)),
+                                              y: model.previewImage == nil ? -22 : -82)
+                            }
+                        }
+                        .allowsHitTesting(false)
+                    }
                     Text(Fmt.duration(max(model.duration - model.time, 0)).isEmpty ? "0:00" : Fmt.duration(max(model.duration - model.time, 0)))
                         .font(.system(size: 12).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.85))
@@ -838,6 +922,7 @@ struct EpisodesPanel: View {
     let currentPath: String
     @EnvironmentObject var state: AppState
     @EnvironmentObject var local: LocalLibrary
+    @EnvironmentObject var artwork: ArtworkLibrary
     @State private var season: Int?
 
     private var currentSeason: Int { series.episodes.first { $0.path == currentPath }?.season ?? series.seasons.first ?? 1 }
@@ -880,6 +965,8 @@ struct EpisodesPanel: View {
         }
         .frame(width: 470)
         .frame(maxHeight: 460)
+        // Ouvert depuis « Reprendre », la fiche n'a pas été vue : on charge ici titres et résumés.
+        .task(id: "\(series.id)-\(shown)") { await artwork.loadSeason(shown, of: series) }
     }
 }
 
@@ -888,8 +975,15 @@ struct EpisodePanelRow: View {
     let current: Bool
     @EnvironmentObject var state: AppState
     @EnvironmentObject var local: LocalLibrary
+    @EnvironmentObject var artwork: ArtworkLibrary
     @State private var hover = false
     @State private var duration: Double = 0
+
+    /// Titre et résumé de l'épisode chez TMDB, quand la série y a été reconnue.
+    private var art: EpisodeArt? {
+        local.catalog.series.first { $0.episodes.contains(episode) }
+            .flatMap { artwork.artwork(for: $0) }?.episode(season: episode.season, number: episode.number)
+    }
 
     var body: some View {
         let position = local.position(for: episode.path)
@@ -900,7 +994,7 @@ struct EpisodePanelRow: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
                     Text("\(episode.number)").font(.system(size: 16, weight: .semibold).monospacedDigit()).frame(width: 26, alignment: .trailing)
-                    Text(episode.label).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                    Text(episode.title ?? art?.name ?? episode.label).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     if state.localPreparing == episode.path { ProgressView().controlSize(.small) }
                     Spacer(minLength: 12)
                     // Trait de progression de l'épisode.
@@ -929,6 +1023,10 @@ struct EpisodePanelRow: View {
                             }
                             Text("\(Fmt.bytes(episode.size)) · \(URL(fileURLWithPath: episode.path).pathExtension.uppercased())")
                                 .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                            if let overview = art?.overview {
+                                Text(overview).font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.8))
+                                    .lineLimit(4).multilineTextAlignment(.leading)
+                            }
                         }
                     }
                     .padding(.leading, 40)
@@ -987,6 +1085,8 @@ struct Scrubber: View {
     var thumb: CGFloat = 10
     /// Curseur rond visible en permanence (barre de progression) ou seulement au survol (volume).
     var showsThumb = true
+    /// Appelé avec la position survolée (0 à 1), ou nul quand le pointeur quitte la barre.
+    var onHover: ((Double?) -> Void)? = nil
     let onSeek: (Double) -> Void
     @State private var hover = false
     @State private var dragValue: Double?
@@ -1019,6 +1119,13 @@ struct Scrubber: View {
                     }
             )
             .onHover { hover = $0 }
+            .onContinuousHover { phase in
+                guard let onHover else { return }
+                switch phase {
+                case .active(let point): onHover(min(1, max(0, point.x / max(geo.size.width, 1))))
+                case .ended: onHover(nil)
+                }
+            }
             .animation(.easeOut(duration: 0.12), value: active)
         }
         .frame(height: 18)

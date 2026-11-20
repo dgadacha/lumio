@@ -31,7 +31,10 @@ dans le format de votre choix pour regarder hors ligne.
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
 | **Lecteur intégré** | Commandes épurées, panneaux Audio et Sous-titres, choix de l'épisode, enchaînement automatique, vitesse, qualité en streaming, plein écran et raccourcis clavier. |
+| **Abonnements et « À regarder plus tard »** | Suivez des chaînes pour retrouver leurs dernières vidéos sur l'accueil, et mettez des vidéos de côté. |
+| **Affiches (TMDB), en option** | Avec une clé TMDB gratuite : affiches, images de fond et résumés d'épisodes pour vos films et séries. |
 | **Claude, en option** | Avec votre clé API : des rangées « Pour vous » d'après ce que vous regardez, et les synopsis de vos films et séries. |
+| **Espace disque** | Ce que Lumio occupe, vidéos triées par taille, suppression des vidéos déjà vues, vidage du cache. |
 | **File d'attente** | Progression, débit, temps restant et annulation, deux téléchargements à la fois. |
 
 ### Choisir le format, la résolution et les sous-titres
@@ -69,6 +72,24 @@ connexion et dans la résolution choisie, 4K comprise.
 
 <img src="docs/screenshots/library.jpg" alt="Bibliothèque hors ligne">
 
+### Abonnements et vidéos mises de côté
+
+- **Abonnements** : depuis la fiche d'une vidéo ou par un clic droit sur une carte, abonnez-vous à sa
+  chaîne. L'accueil affiche alors une rangée « Abonnements » avec les dernières vidéos de vos chaînes,
+  triées par date, et l'onglet Catégories liste vos chaînes. Aucun compte YouTube n'est nécessaire :
+  la liste reste sur votre Mac.
+- **À regarder plus tard** : le signet de la fiche, ou le clic droit sur une carte, met une vidéo de
+  côté. Elle apparaît dans une rangée dédiée de l'accueil.
+
+### Aperçu au survol et espace disque
+
+- **Aperçu** : en survolant la barre de progression, une vignette montre l'image à l'endroit pointé.
+  Elle existe pour les fichiers téléchargés et les films et séries du disque ; en streaming, seule
+  l'heure pointée s'affiche, macOS ne sachant pas extraire d'image d'un flux.
+- **Espace disque** (dans les réglages) : la place occupée par vos téléchargements, triés par taille,
+  avec la mise à la corbeille des vidéos vues jusqu'au bout, et le vidage du cache. Vos films et séries
+  y figurent pour information seulement : Lumio ne les supprime jamais.
+
 ### Suggestions par Claude (en option)
 
 Lumio peut demander à [Claude](https://www.anthropic.com/claude) trois rangées « Pour vous » : deux qui
@@ -103,6 +124,7 @@ film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, sais
   image est recalée sur la grille exacte de sa cadence : un MKV horodate à la milliseconde, ce qui
   donnerait sinon une lecture légèrement saccadée. Les deux dernières
   copies sont gardées dans le cache, les autres sont effacées.
+- **Sur l'accueil** : une rangée « Reprendre vos films et séries » relance d'un clic l'épisode en cours.
 - **Dans le lecteur** : un panneau liste les épisodes de la série et permet d'en changer sans quitter
   la lecture ; à la fin d'un épisode, le suivant démarre après un compte à rebours annulable
   (désactivable dans les réglages).
@@ -117,6 +139,12 @@ film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, sais
   n'est demandé qu'une fois. Les résumés sont écrits de mémoire par le modèle et peuvent contenir des
   erreurs ; s'il ne reconnaît pas un titre, la fiche reste vide plutôt qu'inventée. L'option se
   désactive dans les réglages.
+
+- **Affiches et résumés d'épisodes (TMDB)**, en option : collez une clé gratuite de
+  [themoviedb.org](https://www.themoviedb.org) dans **Réglages → Affiches**. Seuls le titre et l'année
+  de chaque œuvre sont envoyés à TMDB. Une affiche n'est retenue que si le titre correspond exactement
+  et que l'année concorde ; sinon Lumio garde la vignette tirée du fichier. Les résumés d'épisodes ne
+  sont appliqués que si la saison de TMDB couvre les numéros d'épisodes présents sur le disque.
 
 Au premier accès, macOS demande d'autoriser Lumio à lire le dossier Téléchargements.
 
@@ -186,6 +214,8 @@ pour les téléchargements.
 | `Browse.swift` | Accueil, rangées, recherche, bibliothèque, téléchargements |
 | `Detail.swift` | Fiche d'une vidéo et options de téléchargement |
 | `MediaParser.swift` | Classement des fichiers en séries, saisons, épisodes et films, d'après leur nom |
+| `Collections.swift` | Listes de l'utilisateur : vidéos à regarder plus tard, chaînes suivies et leur fil |
+| `Artwork.swift` | Affiches, images de fond et résumés d'épisodes via l'API de TMDB, clé dans le Trousseau |
 | `LocalMedia.swift` | Analyse des dossiers, préparation à la lecture (ffmpeg), vignettes, positions, cache des fiches |
 | `LocalViews.swift` | Onglet Films et séries, fiche d'une série ou d'un film |
 | `Player.swift` | Lecteur, pour un fichier local comme pour un flux |
@@ -222,6 +252,8 @@ sans les inclure, restent soumis à leurs propres licences.
 
 ## Crédits
 
+- Affiches, images de fond et résumés d'épisodes : [TMDB](https://www.themoviedb.org).
+  This product uses the TMDB API but is not endorsed or certified by TMDB.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) et [FFmpeg](https://ffmpeg.org) font le gros du travail.
 - Les captures d'écran montrent des films et vidéos de [Blender Studio](https://studio.blender.org),
   dont *CHARGE*, © Blender Foundation, diffusé sous licence Creative Commons Attribution.

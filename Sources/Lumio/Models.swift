@@ -9,6 +9,10 @@ struct VideoSummary: Codable, Identifiable, Hashable {
     var duration: Double?
     var viewCount: Int?
     var thumbnail: String?
+    /// Identifiant de la chaîne, quand la source le donne. Optionnel : absent des fichiers plus anciens.
+    var channelID: String? = nil
+    /// Date de publication approximative (secondes depuis 1970), connue pour les fils d'abonnements.
+    var publishedAt: Double? = nil
 
     var url: String { "https://www.youtube.com/watch?v=\(id)" }
 
@@ -266,6 +270,8 @@ struct LibraryItem: Codable, Identifiable, Hashable {
     var playable: Bool
     var position: Double = 0
     var lastPlayedAt: Date?
+    /// Vrai une fois la vidéo vue jusqu'au bout. Optionnel : absent des bibliothèques plus anciennes.
+    var watched: Bool? = nil
 
     var folderURL: URL { URL(fileURLWithPath: folder, isDirectory: true) }
     var mediaURL: URL { folderURL.appendingPathComponent(mediaFile) }

@@ -7,6 +7,7 @@ import SwiftUI
 struct LocalLibraryView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var local: LocalLibrary
+    @EnvironmentObject var artwork: ArtworkLibrary
 
     private var subtitle: String {
         if local.scanning { return "Analyse des dossiers en cours…" }
@@ -58,7 +59,8 @@ struct LocalLibraryView: View {
                             LocalCard(path: series.episodes.first?.path ?? "", title: series.title,
                                       subtitle: [series.year.map(String.init), seasons > 1 ? "\(seasons) saisons" : nil,
                                                  "\(count) épisode\(count > 1 ? "s" : "")"].compactMap { $0 }.joined(separator: " · "),
-                                      preferCover: true, symbol: "rectangle.stack.fill") { state.localSeries = series }
+                                      preferCover: true, symbol: "rectangle.stack.fill",
+                                      artURLs: artwork.artwork(for: series)?.cardURLs ?? []) { state.localSeries = series }
                         }
                     }
                 }
@@ -68,7 +70,8 @@ struct LocalLibraryView: View {
                             LocalCard(path: movie.path, title: movie.title,
                                       subtitle: [movie.year.map(String.init), Fmt.bytes(movie.size)].compactMap { $0 }.joined(separator: " · "),
                                       progress: local.position(for: movie.path)?.progress, preferCover: true,
-                                      symbol: "info.circle.fill") { state.localMovie = movie }
+                                      symbol: "info.circle.fill",
+                                      artURLs: artwork.artwork(for: movie)?.cardURLs ?? []) { state.localMovie = movie }
                         }
                     }
                 }
@@ -79,6 +82,8 @@ struct LocalLibraryView: View {
             // a plus de dix minutes : un épisode tout juste téléchargé apparaît de lui-même.
             let stale = local.lastScan.map { Date().timeIntervalSince($0) > 600 } ?? true
             if stale, !local.scanning { await local.scan() }
+            // Les affiches se cherchent après l'analyse, quand titres et années sont connus.
+            if ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil { await state.refreshArtwork() }
         }
     }
 
@@ -122,6 +127,8 @@ struct LocalCard: View {
     var progress: Double? = nil
     var preferCover = false
     var symbol = "play.circle.fill"
+    /// Image fournie par TMDB ; à défaut, la vignette est tirée du fichier.
+    var artURLs: [URL] = []
     let action: () -> Void
     @EnvironmentObject var state: AppState
     @State private var hover = false
@@ -132,7 +139,10 @@ struct LocalCard: View {
             VStack(alignment: .leading, spacing: 9) {
                 Color.clear
                     .aspectRatio(16 / 9, contentMode: .fit)
+                    // La vignette tirée du fichier reste dessous : si l'image de TMDB ne se charge pas
+                    // (hors connexion), la carte n'est jamais vide.
                     .overlay(LocalThumb(path: path, preferCover: preferCover))
+                    .overlay { if !artURLs.isEmpty { RemoteImage(urls: artURLs, placeholder: .clear) } }
                     .overlay(Color.black.opacity(hover || preparing ? 0.32 : 0))
                     .overlay {
                         if preparing {
@@ -201,6 +211,14 @@ struct LocalDetailOverlay: View {
     @EnvironmentObject var local: LocalLibrary
     @State private var season: Int?
     @State private var audioLanguages: [String] = []
+    @EnvironmentObject var artwork: ArtworkLibrary
+
+    private var art: Artwork? {
+        switch item {
+        case .series(let series): return artwork.artwork(for: series)
+        case .movie(let movie): return artwork.artwork(for: movie)
+        }
+    }
 
     private func close() {
         state.localSeries = nil
@@ -286,6 +304,9 @@ struct LocalDetailOverlay: View {
             } else {
                 Theme.surface2
             }
+            if let backdrop = art?.backdropURL(large: true) {
+                RemoteImage(urls: [backdrop], placeholder: .clear)
+            }
             LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .leading, endPoint: .center)
             LinearGradient(colors: [.clear, Theme.surface.opacity(0.55), Theme.surface], startPoint: .center, endPoint: .bottom)
 
@@ -364,6 +385,13 @@ struct LocalDetailOverlay: View {
                     sideLine("Audio", audioLanguages.joined(separator: ", "))
                 }
                 sideLine("Taille", Fmt.bytes(totalSize))
+                if let poster = art?.posterURL {
+                    // Rien ne s'affiche tant que l'affiche n'est pas chargée : pas de cadre vide hors connexion.
+                    OptionalRemoteImage(url: poster, size: CGSize(width: 130, height: 195)) {
+                        Text("Images : TMDB").font(.system(size: 10.5)).foregroundStyle(Theme.faint)
+                    }
+                    .padding(.top, 6)
+                }
             }
             .frame(width: 250, alignment: .leading)
         }
@@ -461,9 +489,14 @@ struct LocalDetailOverlay: View {
             }
             VStack(spacing: 2) {
                 ForEach(series.episodes(in: shown)) { episode in
-                    LocalEpisodeRow(series: series, episode: episode)
+                    LocalEpisodeRow(series: series, episode: episode,
+                                    art: art?.episode(season: episode.season, number: episode.number))
                 }
             }
+        }
+        // Titres et résumés des épisodes, demandés à TMDB à l'ouverture de la saison puis gardés en cache.
+        .task(id: "\(series.id)-\(shown)") {
+            await artwork.loadSeason(shown, of: series)
         }
     }
 }
@@ -471,6 +504,8 @@ struct LocalDetailOverlay: View {
 struct LocalEpisodeRow: View {
     let series: LocalSeries
     let episode: LocalEpisode
+    /// Titre et résumé fournis par TMDB, s'ils existent pour cet épisode.
+    var art: EpisodeArt? = nil
     @EnvironmentObject var state: AppState
     @EnvironmentObject var local: LocalLibrary
     @State private var hover = false
@@ -509,7 +544,7 @@ struct LocalEpisodeRow: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
-                        Text(episode.label).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                        Text(episode.title ?? art?.name ?? episode.label).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                         if position?.finished == true {
                             Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(.green)
                         }
@@ -518,6 +553,11 @@ struct LocalEpisodeRow: View {
                           URL(fileURLWithPath: episode.path).pathExtension.uppercased()]
                         .compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    if let overview = art?.overview {
+                        Text(overview)
+                            .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(3).multilineTextAlignment(.leading)
+                    }
                 }
                 Spacer(minLength: 0)
             }

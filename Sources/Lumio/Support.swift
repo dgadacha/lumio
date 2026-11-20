@@ -198,10 +198,12 @@ actor ImageStore {
 
 struct RemoteImage: View {
     let urls: [URL]
+    /// Fond affiché tant que l'image n'est pas chargée ; transparent pour laisser voir ce qu'il y a dessous.
+    var placeholder: Color = Theme.surface2
     @State private var image: NSImage?
 
     var body: some View {
-        Theme.surface2
+        placeholder
             .overlay {
                 if let image {
                     Image(nsImage: image)
@@ -215,6 +217,30 @@ struct RemoteImage: View {
                 let loaded = await ImageStore.shared.load(urls)
                 withAnimation(.easeOut(duration: 0.25)) { image = loaded }
             }
+    }
+}
+
+/// Image distante qui n'occupe aucune place tant qu'elle n'est pas chargée (affiche facultative).
+struct OptionalRemoteImage<Footer: View>: View {
+    let url: URL
+    let size: CGSize
+    @ViewBuilder var footer: Footer
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                VStack(alignment: .leading, spacing: 4) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: size.width, height: size.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    footer
+                }
+            }
+        }
+        .task(id: url) { image = await ImageStore.shared.load([url]) }
     }
 }
 

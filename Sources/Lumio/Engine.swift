@@ -90,8 +90,33 @@ enum Engine {
             throw EngineError.failed(lastError(result.err))
         }
         let entries = (root["entries"] as? [[String: Any]]) ?? [root]
+        // La liste d'une chaîne ne répète pas son nom sur chaque vidéo : on le reprend de l'en-tête.
+        let listChannel = root["channel"] as? String
+        let listChannelID = root["channel_id"] as? String
         var seen = Set<String>()
-        return entries.compactMap(summary(from:)).filter { seen.insert($0.id).inserted }
+        return entries.compactMap(summary(from:)).filter { seen.insert($0.id).inserted }.map { video in
+            var video = video
+            if video.channel == nil { video.channel = listChannel }
+            if video.channelID == nil { video.channelID = listChannelID }
+            return video
+        }
+    }
+
+    /// Dernières vidéos d'une chaîne suivie, avec leur date approximative pour pouvoir trier le fil.
+    static func channelVideos(_ channel: FollowedChannel, limit: Int) async throws -> [VideoSummary] {
+        let result = try await run([
+            "--flat-playlist", "-J", "--playlist-end", "\(limit)", "--no-warnings",
+            "--extractor-args", "youtubetab:approximate_date", channel.videosURL,
+        ])
+        guard let root = try? JSONSerialization.jsonObject(with: result.out) as? [String: Any] else {
+            throw EngineError.failed(lastError(result.err))
+        }
+        return ((root["entries"] as? [[String: Any]]) ?? []).compactMap(summary(from:)).map { video in
+            var video = video
+            video.channel = channel.name
+            video.channelID = channel.id
+            return video
+        }
     }
 
     private static func summary(from entry: [String: Any]) -> VideoSummary? {
@@ -107,7 +132,9 @@ enum Engine {
             channel: (entry["channel"] as? String) ?? (entry["uploader"] as? String),
             duration: duration,
             viewCount: number(entry["view_count"]).map(Int.init),
-            thumbnail: (best?["url"] as? String) ?? (entry["thumbnail"] as? String)
+            thumbnail: (best?["url"] as? String) ?? (entry["thumbnail"] as? String),
+            channelID: entry["channel_id"] as? String,
+            publishedAt: number(entry["timestamp"])
         )
     }
 
@@ -137,6 +164,7 @@ enum Engine {
         var summary = video
         summary.title = (root["title"] as? String) ?? video.title
         summary.channel = (root["channel"] as? String) ?? video.channel
+        summary.channelID = (root["channel_id"] as? String) ?? video.channelID
         summary.duration = number(root["duration"]) ?? video.duration
         summary.viewCount = number(root["view_count"]).map(Int.init) ?? video.viewCount
         return VideoDetail(

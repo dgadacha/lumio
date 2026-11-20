@@ -7,6 +7,8 @@ struct DetailOverlay: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
     @EnvironmentObject var downloads: DownloadManager
+    @EnvironmentObject var watchLater: WatchLater
+    @EnvironmentObject var subscriptions: Subscriptions
 
     @State private var detail: VideoDetail?
     @State private var error: String?
@@ -139,8 +141,15 @@ struct DetailOverlay: View {
         .frame(height: 430)
         .clipped()
         .overlay(alignment: .topTrailing) {
-            IconButton(symbol: "xmark", size: 14) { state.detail = nil }
-                .padding(16)
+            HStack(spacing: 8) {
+                let current = detail?.summary ?? video
+                IconButton(symbol: watchLater.contains(video.id) ? "bookmark.fill" : "bookmark", size: 14) {
+                    watchLater.toggle(current)
+                }
+                .help(watchLater.contains(video.id) ? "Retirer de « À regarder plus tard »" : "À regarder plus tard")
+                IconButton(symbol: "xmark", size: 14) { state.detail = nil }
+            }
+            .padding(16)
         }
     }
 
@@ -163,6 +172,15 @@ struct DetailOverlay: View {
                 Spacer()
                 if let channel = summary.channel {
                     Text(channel).fontWeight(.semibold)
+                    if let channelID = summary.channelID {
+                        let following = subscriptions.isFollowing(channelID)
+                        Button(following ? "Abonné" : "S'abonner") { subscriptions.toggle(id: channelID, name: channel) }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .bold))
+                            .padding(.horizontal, 10).padding(.vertical, 4)
+                            .foregroundStyle(following ? Color.white : Color.black)
+                            .background(following ? Color.white.opacity(0.16) : Color.white, in: Capsule())
+                    }
                 }
             }
             .font(.system(size: 13.5))

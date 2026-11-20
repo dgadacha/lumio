@@ -133,15 +133,39 @@ struct Category: Identifiable, Hashable {
     ]
 
     static let all = themes + channels
+
+    /// Page d'une chaîne suivie par l'utilisateur ; la teinte découle de son identifiant, donc reste stable.
+    static func followed(_ channel: FollowedChannel) -> Category {
+        let hue = Double(channel.id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
+        return Category(id: "abo-\(channel.id)", name: channel.name, tagline: "Chaîne suivie", symbol: "person.crop.rectangle.stack.fill",
+                        hue: hue, isChannel: true, rows: [Row(title: "Dernières vidéos", query: channel.videosURL)])
+    }
 }
 
 // MARK: - Onglet Catégories
 
 struct CategoriesView: View {
     @EnvironmentObject var state: AppState
+    @EnvironmentObject var subscriptions: Subscriptions
 
     var body: some View {
         PageScaffold(title: "Catégories", subtitle: "Explorez par thème ou par chaîne.") {
+            if !subscriptions.channels.isEmpty {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Mes abonnements").font(.system(size: 19, weight: .bold))
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 300), spacing: 14)], spacing: 14) {
+                        ForEach(subscriptions.channels) { channel in
+                            CategoryTile(category: Category.followed(channel)) { state.open(Category.followed(channel)) }
+                                .contextMenu {
+                                    Button("Se désabonner de \(channel.name)") {
+                                        subscriptions.toggle(id: channel.id, name: channel.name)
+                                    }
+                                }
+                        }
+                    }
+                }
+                .padding(.bottom, 10)
+            }
             section("Thèmes", Category.themes)
             section("Chaînes", Category.channels)
         }

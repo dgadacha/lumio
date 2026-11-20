@@ -12,6 +12,9 @@ struct LumioApp: App {
                 .environmentObject(state.downloads)
                 .environmentObject(state.history)
                 .environmentObject(state.local)
+                .environmentObject(state.watchLater)
+                .environmentObject(state.subscriptions)
+                .environmentObject(state.artwork)
                 .frame(minWidth: 1080, minHeight: 680)
                 .preferredColorScheme(.dark)
         }

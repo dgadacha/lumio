@@ -14,6 +14,8 @@ enum DebugDriver {
     /// Place la lecture à quelques secondes de la fin, pour tester l'enchaînement des épisodes.
     static var playerSeekNearEnd: () -> Void = {}
     static var playerSeekTo: (Double) -> Void = { _ in }
+    /// Simule le survol de la barre de progression à une position (0 à 1) ; une valeur négative l'arrête.
+    static var playerHover: (Double?) -> Void = { _ in }
     /// Ouvre un panneau du lecteur (tracks, episodes, speed, quality) ou le ferme (none).
     static var playerSetPanel: (String) -> Void = { _ in }
 
@@ -128,6 +130,30 @@ enum DebugDriver {
                     log("click \(argument): fiche ouverte=\(state.detail != nil) lecteur=\(state.playing != nil) onglet=\(state.tab)")
                 case "height":
                     log("height: \(videoHeight)p à \(argument)")
+                case "artwork":
+                    // Cherche les affiches. À n'utiliser qu'avec LUMIO_TMDB_ENDPOINT (faux serveur) et TMDB_API_KEY factice.
+                    await state.refreshArtwork(force: true)
+                    log("artwork: cherchées=\(state.artwork.items.count) reconnues=\(state.artwork.items.values.filter(\.found).count) erreur=\(state.artwork.error ?? "aucune")")
+                    for (id, art) in state.artwork.items.sorted(by: { $0.key < $1.key }) {
+                        log("  \(id): trouvée=\(art.found) id=\(art.tmdbID.map(String.init) ?? "-") affiche=\(art.posterPath ?? "-") fond=\(art.backdropPath ?? "-") saisons=\(art.seasons?.mapValues(\.count) ?? [:])")
+                    }
+                case "datacheck":
+                    // Ce que l'app a relu des fichiers de données réels, à comparer à leur contenu brut.
+                    log("datacheck: bibliothèque=\(state.library.items.count) historique=\(state.history.entries.count) positions=\(state.local.positions.count) fiches=\(state.local.info.count) séries=\(state.local.catalog.series.count) accueil=\(state.rows.count) suggestions=\(state.aiRows.count) plus-tard=\(state.watchLater.videos.count) abonnements=\(state.subscriptions.channels.count)")
+                case "follow":
+                    // follow <identifiant> <nom> : suit une chaîne (en mémoire seulement sous le pilote de test).
+                    let fields = argument.split(separator: " ", maxSplits: 1).map(String.init)
+                    if fields.count == 2 { state.subscriptions.toggle(id: fields[0], name: fields[1]) }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    while state.subscriptions.loading { try? await Task.sleep(nanoseconds: 300_000_000) }
+                    log("follow: chaînes=\(state.subscriptions.channels.map(\.name)) fil=\(state.subscriptions.feed.count) erreur=\(state.subscriptions.error ?? "aucune")")
+                    for video in state.subscriptions.feed.prefix(4) {
+                        log("  \(video.publishedAt.map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .omitted) } ?? "sans date") | \(video.channel ?? "-") | \(video.title.prefix(40))")
+                    }
+                case "later":
+                    // Ajoute à « À regarder plus tard » les deux premiers résultats de la recherche en cours.
+                    for video in state.results.prefix(2) { state.watchLater.toggle(video) }
+                    log("later: \(state.watchLater.videos.count) vidéo(s), identifiants de chaîne présents=\(state.results.prefix(2).allSatisfy { $0.channelID != nil })")
                 case "localscan":
                     await state.local.scan()
                     let catalog = state.local.catalog
@@ -160,6 +186,9 @@ enum DebugDriver {
                     log("localplay: lecture=\(state.playing?.video.title ?? "aucune") détail=\(state.playing?.detailLine ?? "") préparé en \(String(format: "%.1f", Date().timeIntervalSince(started))) s sous-titres=\(state.playing?.subtitles.map(\.label) ?? []) suivant=\(state.playing?.nextLocalPath != nil) erreur=\(state.streamError ?? "aucune")")
                 case "panel":
                     playerSetPanel(argument)
+                case "hover":
+                    let value = Double(argument) ?? -1
+                    playerHover(value < 0 ? nil : value)
                 case "seekto":
                     playerSeekTo(Double(argument) ?? 0)
                 case "seekend":

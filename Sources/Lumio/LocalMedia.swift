@@ -18,6 +18,28 @@ enum LocalTools {
         return url
     }()
 
+    /// Taille totale du cache de Lumio (copies temporaires, vignettes, sous-titres extraits).
+    static func cacheSize() -> Int64 {
+        guard let walker = FileManager.default.enumerator(at: caches, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in walker {
+            total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Vide le cache de Lumio. `keeping` est le fichier en cours de lecture : il n'est pas supprimé.
+    /// Ne touche qu'au dossier de cache de l'app, jamais aux vidéos de l'utilisateur.
+    static func clearCache(keeping: URL?) {
+        guard let walker = FileManager.default.enumerator(at: caches, includingPropertiesForKeys: [.isRegularFileKey]) else { return }
+        let kept = keeping?.standardizedFileURL.path
+        for case let file as URL in walker {
+            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  file.standardizedFileURL.path != kept else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
     /// Empreinte stable d'un fichier : change s'il est remplacé (taille ou date différente).
     static func fingerprint(_ path: String) -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
@@ -516,6 +538,8 @@ final class LocalLibrary: ObservableObject {
         for series in catalog.series {
             guard let episode = nextUp(in: series), let latest = series.episodes
                 .compactMap({ positions[$0.path] }).max(by: { $0.date < $1.date }) else { continue }
+            // Dernier épisode vu jusqu'au bout : la série est terminée, plus rien à reprendre.
+            if positions[episode.path]?.finished == true { continue }
             let shown = positions[episode.path] ?? LocalPosition(position: 0, duration: 0, date: latest.date)
             rows.append((series.title, "S\(episode.season) : É\(episode.number)", episode.path,
                          LocalPosition(position: shown.position, duration: shown.duration, date: latest.date)))

@@ -11,12 +11,41 @@ struct CardData: Identifiable {
     var badge: String? = nil
     var progress: Double? = nil
     var hoverSymbol = "info.circle.fill"
+    /// Vidéo YouTube représentée, pour le menu contextuel (plus tard, abonnement).
+    var video: VideoSummary? = nil
     let action: () -> Void
+}
+
+/// Menu contextuel d'une vidéo YouTube : la garder pour plus tard, suivre sa chaîne.
+/// Les objets de l'app lui sont passés par la carte : le contenu d'un menu contextuel est présenté
+/// hors de la hiérarchie des vues, et ne doit pas compter sur l'environnement.
+struct VideoContextMenu: View {
+    let video: VideoSummary
+    let state: AppState
+    @ObservedObject var watchLater: WatchLater
+    @ObservedObject var subscriptions: Subscriptions
+
+    var body: some View {
+        Button { Task { await state.watch(video) } } label: { Label("Regarder", systemImage: "play") }
+        Button { watchLater.toggle(video) } label: {
+            Label(watchLater.contains(video.id) ? "Retirer de « À regarder plus tard »" : "À regarder plus tard",
+                  systemImage: watchLater.contains(video.id) ? "bookmark.slash" : "bookmark")
+        }
+        if let channelID = video.channelID, let name = video.channel {
+            Button { subscriptions.toggle(id: channelID, name: name) } label: {
+                Label(subscriptions.isFollowing(channelID) ? "Se désabonner de \(name)" : "S'abonner à \(name)",
+                      systemImage: subscriptions.isFollowing(channelID) ? "person.badge.minus" : "person.badge.plus")
+            }
+        }
+    }
 }
 
 struct VideoCard: View {
     let data: CardData
     var width: CGFloat? = 264
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var watchLater: WatchLater
+    @EnvironmentObject var subscriptions: Subscriptions
     @State private var hover = false
 
     var body: some View {
@@ -90,6 +119,11 @@ struct VideoCard: View {
         .zIndex(hover ? 1 : 0)
         .animation(.spring(response: 0.28, dampingFraction: 0.78), value: hover)
         .onHover { hover = $0 }
+        .contextMenu {
+            if let video = data.video {
+                VideoContextMenu(video: video, state: state, watchLater: watchLater, subscriptions: subscriptions)
+            }
+        }
     }
 }
 
@@ -173,6 +207,7 @@ struct CardFactory {
             duration: video.duration,
             badge: owned == nil ? nil : "Hors ligne",
             progress: owned?.progress ?? state.history.entry(for: video.id)?.progress,
+            video: video,
             action: { state.detail = video }
         )
     }
@@ -197,6 +232,9 @@ struct HomeView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var library: Library
     @EnvironmentObject var history: WatchHistory
+    @EnvironmentObject var local: LocalLibrary
+    @EnvironmentObject var watchLater: WatchLater
+    @EnvironmentObject var subscriptions: Subscriptions
 
     var body: some View {
         let factory = CardFactory(state: state, library: library)
@@ -212,8 +250,24 @@ struct HomeView: View {
                     EngineBanner().padding(.horizontal, 48)
                 }
 
+                if !local.inProgress.isEmpty {
+                    LocalResumeShelf()
+                }
                 if !library.continueWatching.isEmpty {
                     Shelf(title: "Reprendre la lecture", cards: library.continueWatching.map(factory.card))
+                }
+                if !watchLater.videos.isEmpty {
+                    Shelf(title: "À regarder plus tard", cards: watchLater.videos.map(factory.card))
+                }
+                if !subscriptions.feed.isEmpty {
+                    Shelf(title: "Abonnements", subtitle: "Les dernières vidéos des chaînes que vous suivez",
+                          cards: subscriptions.feed.prefix(24).map(factory.card))
+                } else if subscriptions.loading {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Chargement de vos abonnements…").font(.system(size: 13)).foregroundStyle(Theme.dim)
+                    }
+                    .padding(.horizontal, 48)
                 }
                 if !history.entries.isEmpty {
                     Shelf(title: "Vus récemment en streaming", cards: history.entries.prefix(20).map { factory.card($0.video) })
@@ -261,6 +315,32 @@ struct HomeView: View {
                 }
             }
             .padding(.bottom, 60)
+        }
+    }
+}
+
+/// Films et séries du disque en cours de lecture : un clic reprend là où l'on s'était arrêté.
+struct LocalResumeShelf: View {
+    @EnvironmentObject var state: AppState
+    @EnvironmentObject var local: LocalLibrary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Reprendre vos films et séries")
+                .font(.system(size: 19, weight: .bold))
+                .padding(.horizontal, 48)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(local.inProgress.prefix(12), id: \.path) { row in
+                        LocalCard(path: row.path, title: row.title, subtitle: row.detail, progress: row.position.progress,
+                                  symbol: "play.circle.fill") { Task { await state.playLocal(path: row.path) } }
+                            .frame(width: 264)
+                    }
+                }
+                .padding(.horizontal, 48)
+                .padding(.vertical, 14)
+            }
+            .scrollClipDisabled()
         }
     }
 }

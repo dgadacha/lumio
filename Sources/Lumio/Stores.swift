@@ -16,6 +16,8 @@ final class Library: ObservableObject {
     }
 
     private func save() {
+        // Sous le pilote de test, la bibliothèque réelle n'est jamais réécrite.
+        guard ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil else { return }
         guard let data = try? JSONEncoder().encode(items) else { return }
         try? data.write(to: file, options: .atomic)
     }
@@ -32,10 +34,16 @@ final class Library: ObservableObject {
     func updatePosition(_ id: UUID, position: Double) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         let duration = items[index].duration ?? 0
-        items[index].position = duration > 0 && position > duration * 0.96 ? 0 : position
+        let finished = duration > 0 && position > duration * 0.96
+        items[index].position = finished ? 0 : position
+        // La position repart de zéro en fin de vidéo : ce marqueur garde la trace qu'elle a été vue.
+        if finished { items[index].watched = true }
         items[index].lastPlayedAt = Date()
         save()
     }
+
+    /// Téléchargements vus jusqu'au bout.
+    var watchedItems: [LibraryItem] { items.filter { $0.watched == true } }
 
     /// Met le dossier à la corbeille (récupérable) et retire l'entrée.
     func remove(_ item: LibraryItem) {
@@ -442,6 +450,9 @@ final class AppState: ObservableObject {
     let downloads: DownloadManager
     let history = WatchHistory()
     let local = LocalLibrary()
+    let watchLater = WatchLater()
+    let subscriptions = Subscriptions()
+    let artwork = ArtworkLibrary()
     private let aiCacheFile = Paths.support.appendingPathComponent("suggestions.json")
     private var detailCache: [String: VideoDetail] = [:]
     private var searchToken = 0
@@ -470,6 +481,9 @@ final class AppState: ObservableObject {
             await loadHome(force: false)
             await autoUpdateEngineIfDue()
             // Sous le pilote de test, pas d'appel automatique : il serait facturé sur la clé de l'utilisateur.
+            await subscriptions.refresh(force: false)
+            // Sous le pilote de test, aucun appel automatique à un service qui demande une clé.
+            if ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil { await refreshArtwork() }
             if ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil {
                 await refreshSuggestions(force: false)
             }
@@ -651,6 +665,11 @@ final class AppState: ObservableObject {
 
     // MARK: Films et séries du disque
 
+    /// Cherche chez TMDB les affiches manquantes des films et séries du disque.
+    func refreshArtwork(force: Bool = false) async {
+        await artwork.fetchMissing(catalog: local.catalog, info: local.info, force: force)
+    }
+
     /// Lit un film ou un épisode trouvé sur le disque. Un fichier que le lecteur système ne lit pas
     /// tel quel (MKV) est d'abord recopié dans un MP4 temporaire, sans réencodage : une à deux secondes.
     func playLocal(path: String) async {
@@ -757,6 +776,8 @@ final class AppState: ObservableObject {
             if categoryRows[category.id] == nil { categoryErrors[category.id] = firstError ?? "Aucune vidéo trouvée." }
             return
         }
+        // Sous le pilote de test, le cache des catégories de l'utilisateur n'est pas réécrit.
+        guard ProcessInfo.processInfo.environment["LUMIO_DEBUG"] == nil else { return }
         var cache = readCategoryCache()
         cache.entries[category.id] = .init(date: Date(), rows: categoryRows[category.id] ?? [])
         if let data = try? JSONEncoder().encode(cache) { try? data.write(to: categoryCacheFile, options: .atomic) }
