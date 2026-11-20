@@ -123,6 +123,9 @@ struct SettingsView: View {
                 HStack {
                     Button("Chercher à nouveau") { Task { await state.refreshArtwork(force: true) } }
                         .disabled(!tmdbSaved || artwork.loading)
+                    Button(artwork.missingOverviews > 0 ? "Récupérer les descriptions TMDB (\(artwork.missingOverviews))"
+                           : "Descriptions TMDB à jour") { Task { await artwork.fetchOverviews() } }
+                        .disabled(!tmdbSaved || artwork.loading || artwork.missingOverviews == 0)
                     Button("Effacer les affiches et vos choix") { artwork.clear() }.disabled(artwork.items.isEmpty)
                         .help("Efface les affiches trouvées, ainsi que les œuvres que vous avez choisies à la main.")
                     Spacer()

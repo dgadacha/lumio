@@ -130,6 +130,14 @@ enum DebugDriver {
                     log("click \(argument): fiche ouverte=\(state.detail != nil) lecteur=\(state.playing != nil) onglet=\(state.tab)")
                 case "height":
                     log("height: \(videoHeight)p à \(argument)")
+                case "artoverview":
+                    // Récupère les descriptions manquantes (faux serveur), puis les journalise.
+                    log("artoverview: manquantes avant=\(state.artwork.missingOverviews)")
+                    await state.artwork.fetchOverviews()
+                    log("artoverview: manquantes après=\(state.artwork.missingOverviews) erreur=\(state.artwork.error ?? "aucune")")
+                    for (id, art) in state.artwork.items.sorted(by: { $0.key < $1.key }) where art.found {
+                        log("  \(id): description=\(art.overview.map { "\($0.count) caractères" } ?? "absente")")
+                    }
                 case "artnone":
                     // artnone <identifiant> : « aucune affiche » choisi à la main, puis recherche forcée.
                     state.artwork.chooseNone(for: argument)

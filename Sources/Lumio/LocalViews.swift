@@ -440,7 +440,15 @@ struct LocalDetailOverlay: View {
 
     @ViewBuilder
     private var synopsis: some View {
-        if let info, info.known {
+        if let overview = art?.overview, !overview.isEmpty {
+            // La description de TMDB prime : elle vient d'une source, pas de la mémoire d'un modèle.
+            Text(overview)
+                .font(.system(size: 14))
+                .foregroundStyle(.white.opacity(0.88))
+                .lineSpacing(4)
+                .textSelection(.enabled)
+            Text("Description : TMDB").font(.system(size: 11.5)).foregroundStyle(Theme.faint)
+        } else if let info, info.known {
             Text(info.synopsis)
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.88))
@@ -448,6 +456,7 @@ struct LocalDetailOverlay: View {
                 .textSelection(.enabled)
             Label("Résumé rédigé par Claude, de mémoire : il peut contenir des erreurs.", systemImage: "sparkles")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.faint)
+            tmdbDescriptionButton
         } else if local.describing {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -468,11 +477,28 @@ struct LocalDetailOverlay: View {
         }
     }
 
+    /// Proposé quand l'œuvre est reconnue par TMDB mais que sa description n'a pas encore été récupérée.
+    @ViewBuilder
+    private var tmdbDescriptionButton: some View {
+        if let art, art.tmdbID != nil, art.overview == nil, artwork.enabled, TMDBKeyStore.hasKey {
+            Button(artwork.loading ? "Récupération…" : "Récupérer la description TMDB") {
+                Task { await artwork.fetchOverviews() }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12.5, weight: .bold))
+            .foregroundStyle(.white)
+            .disabled(artwork.loading)
+        }
+    }
+
     private func synopsisNote(_ text: String, action: String) -> some View {
-        HStack(spacing: 12) {
-            Text(text).font(.system(size: 13)).foregroundStyle(Theme.dim)
-            Button(action) { Task { await local.fetchMissingInfo(refresh: [infoKey]) } }
-                .buttonStyle(.plain).font(.system(size: 12.5, weight: .bold)).foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text(text).font(.system(size: 13)).foregroundStyle(Theme.dim)
+                Button(action) { Task { await local.fetchMissingInfo(refresh: [infoKey]) } }
+                    .buttonStyle(.plain).font(.system(size: 12.5, weight: .bold)).foregroundStyle(.white)
+            }
+            tmdbDescriptionButton
         }
     }
 

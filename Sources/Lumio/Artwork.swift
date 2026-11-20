@@ -79,6 +79,8 @@ struct Artwork: Codable, Hashable {
     /// Vrai quand l'utilisateur a choisi lui-même l'œuvre (ou décidé qu'il n'y en avait pas) :
     /// la recherche automatique n'y touche plus. Optionnel : absent des fichiers plus anciens.
     var manual: Bool? = nil
+    /// Description de l'œuvre fournie par TMDB. Optionnelle : absente des fichiers plus anciens.
+    var overview: String? = nil
 
     static let imageBase = "https://image.tmdb.org/t/p/"
     var posterURL: URL? { posterPath.flatMap { URL(string: Self.imageBase + "w500" + $0) } }
@@ -172,7 +174,20 @@ enum TMDBClient {
               let id = (best["id"] as? NSNumber)?.intValue else { return Artwork(found: false) }
         let poster = best["poster_path"] as? String, backdrop = best["backdrop_path"] as? String
         guard poster != nil || backdrop != nil else { return Artwork(found: false) }
-        return Artwork(found: true, tmdbID: id, posterPath: poster, backdropPath: backdrop)
+        return Artwork(found: true, tmdbID: id, posterPath: poster, backdropPath: backdrop,
+                       overview: cleanOverview(best["overview"]))
+    }
+
+    private static func cleanOverview(_ raw: Any?) -> String? {
+        guard let text = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return String(text.prefix(900))
+    }
+
+    /// Description d'une œuvre déjà identifiée, en français, à défaut en anglais.
+    static func overview(id: Int, isSeries: Bool) async throws -> String? {
+        let path = isSeries ? "/tv/\(id)" : "/movie/\(id)"
+        if let french = cleanOverview(try await get(path, ["language": "fr-FR"])["overview"]) { return french }
+        return cleanOverview(try await get(path, ["language": "en-US"])["overview"])
     }
 
     /// Une œuvre proposée par TMDB pour un choix manuel.
@@ -183,6 +198,7 @@ enum TMDBClient {
         let year: Int?
         let posterPath: String?
         let backdropPath: String?
+        var overview: String? = nil
         var posterURL: URL? { posterPath.flatMap { URL(string: Artwork.imageBase + "w154" + $0) } }
     }
 
@@ -197,7 +213,8 @@ enum TMDBClient {
             let date = result[isSeries ? "first_air_date" : "release_date"] as? String
             return Candidate(id: id, name: name, originalName: original == name ? nil : original,
                              year: date.flatMap { Int($0.prefix(4)) },
-                             posterPath: result["poster_path"] as? String, backdropPath: result["backdrop_path"] as? String)
+                             posterPath: result["poster_path"] as? String, backdropPath: result["backdrop_path"] as? String,
+                             overview: cleanOverview(result["overview"]))
         }
     }
 
@@ -303,7 +320,36 @@ final class ArtworkLibrary: ObservableObject {
     /// Retient l'œuvre choisie par l'utilisateur. Les saisons seront rechargées pour cette œuvre.
     func choose(_ candidate: TMDBClient.Candidate, for key: String) {
         items[key] = Artwork(found: true, tmdbID: candidate.id, posterPath: candidate.posterPath,
-                             backdropPath: candidate.backdropPath, manual: true)
+                             backdropPath: candidate.backdropPath, manual: true, overview: candidate.overview)
+        save()
+    }
+
+    /// Nombre d'œuvres reconnues dont la description n'a pas encore été récupérée.
+    var missingOverviews: Int { items.values.filter { $0.found && $0.tmdbID != nil && $0.overview == nil }.count }
+
+    /// Récupère chez TMDB la description des œuvres déjà reconnues qui n'en ont pas.
+    /// Les clés des films commencent par « film- » ; les autres sont des séries.
+    func fetchOverviews() async {
+        guard enabled, !loading, TMDBKeyStore.hasKey else { return }
+        let wanted = items.filter { $0.value.found && $0.value.tmdbID != nil && $0.value.overview == nil }
+        guard !wanted.isEmpty else { return }
+        loading = true
+        error = nil
+        defer { loading = false }
+        for (key, art) in wanted {
+            guard let id = art.tmdbID else { continue }
+            do {
+                // Une œuvre sans description chez TMDB est notée vide, pour ne pas la redemander.
+                let text = try await TMDBClient.overview(id: id, isSeries: !key.hasPrefix("film-"))
+                if var current = items[key], current.tmdbID == id {
+                    current.overview = text ?? ""
+                    items[key] = current
+                }
+            } catch {
+                self.error = error.localizedDescription
+                break
+            }
+        }
         save()
     }
 
