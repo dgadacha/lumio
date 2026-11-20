@@ -399,6 +399,11 @@ final class AppState: ObservableObject {
 
     @Published var detail: VideoSummary?
     @Published var playing: PlayableMedia?
+    /// Vrai quand la vidéo joue dans la petite fenêtre flottante : le lecteur reste vivant mais invisible,
+    /// et la fenêtre principale redevient utilisable.
+    @Published var playerMinimized = false
+    /// Le prochain lecteur ouvert doit repasser en mode réduit (enchaînement d'épisodes en mode réduit).
+    var pendingMini = false
     /// Identifiant de la vidéo dont le flux est en cours de préparation.
     @Published var streamLoading: String?
     @Published var streamError: String?

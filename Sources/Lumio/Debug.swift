@@ -14,6 +14,8 @@ enum DebugDriver {
     /// Place la lecture à quelques secondes de la fin, pour tester l'enchaînement des épisodes.
     static var playerSeekNearEnd: () -> Void = {}
     static var playerSeekTo: (Double) -> Void = { _ in }
+    static var playerToggleMini: () -> Void = {}
+    static var playerMiniReport: () -> String = { "aucun lecteur" }
     /// Simule le survol de la barre de progression à une position (0 à 1) ; une valeur négative l'arrête.
     static var playerHover: (Double?) -> Void = { _ in }
     /// Ouvre un panneau du lecteur (tracks, episodes, speed, quality) ou le ferme (none).
@@ -214,6 +216,15 @@ enum DebugDriver {
                 case "hover":
                     let value = Double(argument) ?? -1
                     playerHover(value < 0 ? nil : value)
+                case "mini":
+                    // Bascule le lecteur réduit, puis rapporte son état.
+                    if argument != "état" { playerToggleMini() }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    log("mini \(argument): [\(state.playing?.detailLine ?? "aucun lecteur")] \(playerMiniReport()) | lecteur masqué=\(state.playerMinimized) fenêtres de l'app=\(NSApp.windows.filter(\.isVisible).count)")
+                    // Détail des fenêtres visibles : type, taille, niveau (une fenêtre flottante a un niveau élevé).
+                    for window in NSApp.windows where window.isVisible {
+                        log("    fenêtre \(String(describing: type(of: window))) \(Int(window.frame.width))x\(Int(window.frame.height)) niveau=\(window.level.rawValue) titre=\(window.title.isEmpty ? "-" : window.title)")
+                    }
                 case "seekto":
                     playerSeekTo(Double(argument) ?? 0)
                 case "seekend":

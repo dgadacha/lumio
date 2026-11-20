@@ -73,6 +73,10 @@ struct RootView: View {
                     .ignoresSafeArea()
                     .transition(.opacity)
                     .zIndex(3)
+                    // En mode réduit, le lecteur reste en place (son calque alimente la fenêtre flottante)
+                    // mais ne masque plus l'app et ne capte plus les clics.
+                    .opacity(state.playerMinimized ? 0 : 1)
+                    .allowsHitTesting(!state.playerMinimized)
             }
         }
         .overlay(alignment: .bottom) {

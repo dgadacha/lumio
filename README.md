@@ -30,7 +30,7 @@ dans le format de votre choix pour regarder hors ligne.
 | **Lecture immédiate** | Un bouton « Regarder » lit la vidéo en streaming, sans rien télécharger, avec reprise là où vous vous êtes arrêté. |
 | **Téléchargement à la carte** | Vidéo ou audio seul, résolution jusqu'à la 4K/8K, codec, piste audio doublée, sous-titres, chapitres. |
 | **Bibliothèque hors ligne** | Tout ce qui est téléchargé se lit sans connexion, avec reprise là où vous vous êtes arrêté. |
-| **Lecteur intégré** | Commandes épurées, panneaux Audio et Sous-titres, choix de l'épisode, enchaînement automatique, vitesse, qualité en streaming, plein écran et raccourcis clavier. |
+| **Lecteur intégré** | Commandes épurées, panneaux Audio et Sous-titres, choix de l'épisode, enchaînement automatique, vitesse, qualité en streaming, plein écran, lecteur réduit et raccourcis clavier. |
 | **Abonnements et « À regarder plus tard »** | Suivez des chaînes pour retrouver leurs dernières vidéos sur l'accueil, et mettez des vidéos de côté. |
 | **Affiches (TMDB), en option** | Avec une clé TMDB gratuite : affiches, images de fond et résumés d'épisodes pour vos films et séries. |
 | **Claude, en option** | Avec votre clé API : des rangées « Pour vous » d'après ce que vous regardez, et les synopsis de vos films et séries. |
@@ -80,6 +80,13 @@ connexion et dans la résolution choisie, 4K comprise.
   la liste reste sur votre Mac.
 - **À regarder plus tard** : le signet de la fiche, ou le clic droit sur une carte, met une vidéo de
   côté. Elle apparaît dans une rangée dédiée de l'accueil.
+
+### Lecteur réduit
+
+Le bouton à gauche du plein écran détache la vidéo dans une petite fenêtre flottante, qui reste
+au-dessus des autres (image dans l'image de macOS). La fenêtre principale redevient alors utilisable
+pour parcourir l'app. Le bouton de retour de la fenêtre flottante, ou sa fermeture, ramène la vidéo
+dans le lecteur. Les sous-titres dessinés par Lumio ne s'affichent pas dans la fenêtre flottante.
 
 ### Aperçu au survol et espace disque
 
