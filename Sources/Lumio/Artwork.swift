@@ -76,6 +76,9 @@ struct Artwork: Codable, Hashable {
     /// Épisodes par saison puis par numéro, chargés à l'ouverture de la fiche.
     var seasons: [String: [String: EpisodeArt]]? = nil
     var fetchedAt = Date()
+    /// Vrai quand l'utilisateur a choisi lui-même l'œuvre (ou décidé qu'il n'y en avait pas) :
+    /// la recherche automatique n'y touche plus. Optionnel : absent des fichiers plus anciens.
+    var manual: Bool? = nil
 
     static let imageBase = "https://image.tmdb.org/t/p/"
     var posterURL: URL? { posterPath.flatMap { URL(string: Self.imageBase + "w500" + $0) } }
@@ -172,6 +175,32 @@ enum TMDBClient {
         return Artwork(found: true, tmdbID: id, posterPath: poster, backdropPath: backdrop)
     }
 
+    /// Une œuvre proposée par TMDB pour un choix manuel.
+    struct Candidate: Identifiable, Hashable {
+        let id: Int
+        let name: String
+        let originalName: String?
+        let year: Int?
+        let posterPath: String?
+        let backdropPath: String?
+        var posterURL: URL? { posterPath.flatMap { URL(string: Artwork.imageBase + "w154" + $0) } }
+    }
+
+    /// Recherche libre, sans le filtre strict de `find` : c'est l'utilisateur qui tranche.
+    static func candidates(query: String, isSeries: Bool) async throws -> [Candidate] {
+        let root = try await get(isSeries ? "/search/tv" : "/search/movie",
+                                 ["query": query, "language": "fr-FR", "include_adult": "false"])
+        return ((root["results"] as? [[String: Any]]) ?? []).prefix(12).compactMap { result in
+            guard let id = (result["id"] as? NSNumber)?.intValue,
+                  let name = (result[isSeries ? "name" : "title"] as? String), !name.isEmpty else { return nil }
+            let original = result[isSeries ? "original_name" : "original_title"] as? String
+            let date = result[isSeries ? "first_air_date" : "release_date"] as? String
+            return Candidate(id: id, name: name, originalName: original == name ? nil : original,
+                             year: date.flatMap { Int($0.prefix(4)) },
+                             posterPath: result["poster_path"] as? String, backdropPath: result["backdrop_path"] as? String)
+        }
+    }
+
     /// Titres et résumés des épisodes d'une saison.
     static func season(seriesID: Int, number: Int) async throws -> [String: EpisodeArt] {
         let root = try await get("/tv/\(seriesID)/season/\(number)", ["language": "fr-FR"])
@@ -231,7 +260,8 @@ final class ArtworkLibrary: ObservableObject {
             let key = LocalLibrary.infoKey(movie)
             return Wanted(id: key, title: movie.title, alternate: info[key]?.originalTitle, year: movie.year ?? info[key]?.year, isSeries: false)
         }
-        wanted = wanted.filter { force ? items[$0.id]?.found != true : items[$0.id] == nil }
+        // Un choix fait à la main n'est jamais remis en cause par la recherche automatique.
+        wanted = wanted.filter { items[$0.id]?.manual != true && (force ? items[$0.id]?.found != true : items[$0.id] == nil) }
         guard !wanted.isEmpty else { return }
 
         loading = true
@@ -267,6 +297,19 @@ final class ArtworkLibrary: ObservableObject {
         seasons["\(season)"] = covered ? episodes : [:]
         art.seasons = seasons
         items[series.id] = art
+        save()
+    }
+
+    /// Retient l'œuvre choisie par l'utilisateur. Les saisons seront rechargées pour cette œuvre.
+    func choose(_ candidate: TMDBClient.Candidate, for key: String) {
+        items[key] = Artwork(found: true, tmdbID: candidate.id, posterPath: candidate.posterPath,
+                             backdropPath: candidate.backdropPath, manual: true)
+        save()
+    }
+
+    /// L'utilisateur ne veut aucune affiche pour cette œuvre : on garde la vignette tirée du fichier.
+    func chooseNone(for key: String) {
+        items[key] = Artwork(found: false, manual: true)
         save()
     }
 

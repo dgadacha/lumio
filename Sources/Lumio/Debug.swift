@@ -130,6 +130,23 @@ enum DebugDriver {
                     log("click \(argument): fiche ouverte=\(state.detail != nil) lecteur=\(state.playing != nil) onglet=\(state.tab)")
                 case "height":
                     log("height: \(videoHeight)p à \(argument)")
+                case "artnone":
+                    // artnone <identifiant> : « aucune affiche » choisi à la main, puis recherche forcée.
+                    state.artwork.chooseNone(for: argument)
+                    await state.refreshArtwork(force: true)
+                    let art = state.artwork.items[argument]
+                    log("artnone \(argument): trouvée=\(art?.found ?? true) manuel=\(art?.manual ?? false) (doit rester false/true après recherche forcée)")
+                case "artpick":
+                    // artpick <identifiant> <recherche> : recherche libre puis choix du premier résultat (faux serveur).
+                    let fields = argument.split(separator: " ", maxSplits: 1).map(String.init)
+                    guard fields.count == 2 else { log("artpick: arguments manquants"); continue }
+                    do {
+                        let found = try await TMDBClient.candidates(query: fields[1], isSeries: true)
+                        log("artpick: \(found.count) proposition(s) : \(found.map { "\($0.name) (\($0.year.map(String.init) ?? "?"))" })")
+                        if let first = found.first { state.artwork.choose(first, for: fields[0]) }
+                        let art = state.artwork.items[fields[0]]
+                        log("artpick: retenue=\(art?.found ?? false) id=\(art?.tmdbID.map(String.init) ?? "-") manuel=\(art?.manual ?? false)")
+                    } catch { log("artpick: erreur \(error.localizedDescription)") }
                 case "artwork":
                     // Cherche les affiches. À n'utiliser qu'avec LUMIO_TMDB_ENDPOINT (faux serveur) et TMDB_API_KEY factice.
                     await state.refreshArtwork(force: true)

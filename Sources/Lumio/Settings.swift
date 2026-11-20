@@ -123,7 +123,8 @@ struct SettingsView: View {
                 HStack {
                     Button("Chercher à nouveau") { Task { await state.refreshArtwork(force: true) } }
                         .disabled(!tmdbSaved || artwork.loading)
-                    Button("Effacer les affiches en cache") { artwork.clear() }.disabled(artwork.items.isEmpty)
+                    Button("Effacer les affiches et vos choix") { artwork.clear() }.disabled(artwork.items.isEmpty)
+                        .help("Efface les affiches trouvées, ainsi que les œuvres que vous avez choisies à la main.")
                     Spacer()
                 }
                 Text("Clé gratuite à créer sur themoviedb.org (Paramètres → API). Seuls le titre et l'année de chaque œuvre sont envoyés à TMDB. Une affiche n'est retenue que si le titre correspond exactement et que l'année concorde ; sinon la vignette tirée du fichier est conservée.")

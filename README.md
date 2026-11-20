@@ -143,7 +143,9 @@ film s'ouvre dans une fiche : bandeau, bouton de lecture, synopsis, genres, sais
 - **Affiches et résumés d'épisodes (TMDB)**, en option : collez une clé gratuite de
   [themoviedb.org](https://www.themoviedb.org) dans **Réglages → Affiches**. Seuls le titre et l'année
   de chaque œuvre sont envoyés à TMDB. Une affiche n'est retenue que si le titre correspond exactement
-  et que l'année concorde ; sinon Lumio garde la vignette tirée du fichier. Les résumés d'épisodes ne
+  et que l'année concorde ; sinon Lumio garde la vignette tirée du fichier. Si une œuvre n'est pas
+  trouvée, ou reconnue à tort, le lien « Choisir l'affiche » de sa fiche ouvre une recherche libre où
+  vous désignez vous-même la bonne ; ce choix n'est plus remis en cause. Les résumés d'épisodes ne
   sont appliqués que si la saison de TMDB couvre les numéros d'épisodes présents sur le disque.
 
 Au premier accès, macOS demande d'autoriser Lumio à lire le dossier Téléchargements.

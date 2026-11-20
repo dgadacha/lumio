@@ -212,6 +212,7 @@ struct LocalDetailOverlay: View {
     @State private var season: Int?
     @State private var audioLanguages: [String] = []
     @EnvironmentObject var artwork: ArtworkLibrary
+    @State private var picking = false
 
     private var art: Artwork? {
         switch item {
@@ -239,6 +240,11 @@ struct LocalDetailOverlay: View {
         }
     }
 
+    private var isSeries: Bool {
+        if case .series = item { return true }
+        return false
+    }
+
     private var infoKey: String {
         switch item {
         case .series(let series): return series.id
@@ -264,6 +270,9 @@ struct LocalDetailOverlay: View {
                         header
                         VStack(alignment: .leading, spacing: 24) {
                             about
+                            if picking {
+                                ArtworkPicker(title: title, isSeries: isSeries, key: infoKey) { picking = false }
+                            }
                             if case .series(let series) = item {
                                 Divider().overlay(Color.white.opacity(0.12))
                                 episodes(of: series)
@@ -392,6 +401,14 @@ struct LocalDetailOverlay: View {
                     }
                     .padding(.top, 6)
                 }
+                // Choix manuel : pour une œuvre non trouvée, ou reconnue à tort.
+                if artwork.enabled, TMDBKeyStore.hasKey {
+                    Button(picking ? "Fermer le choix" : (art == nil ? "Choisir l'affiche…" : "Changer d'affiche…")) { picking.toggle() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.top, 4)
+                }
             }
             .frame(width: 250, alignment: .leading)
         }
@@ -495,7 +512,8 @@ struct LocalDetailOverlay: View {
             }
         }
         // Titres et résumés des épisodes, demandés à TMDB à l'ouverture de la saison puis gardés en cache.
-        .task(id: "\(series.id)-\(shown)") {
+        // L'identifiant de l'œuvre fait partie de la clé : après un choix manuel, les épisodes se rechargent.
+        .task(id: "\(series.id)-\(shown)-\(art?.tmdbID ?? 0)") {
             await artwork.loadSeason(shown, of: series)
         }
     }
@@ -575,5 +593,111 @@ struct LocalEpisodeRow: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: episode.path)])
             }
         }
+    }
+}
+
+
+// MARK: - Choix manuel de l'œuvre chez TMDB
+
+/// Recherche libre chez TMDB et choix de la bonne œuvre par l'utilisateur.
+/// Sert quand la recherche automatique, volontairement stricte, n'a rien retenu ou s'est trompée.
+struct ArtworkPicker: View {
+    let title: String
+    let isSeries: Bool
+    let key: String
+    let onDone: () -> Void
+    @EnvironmentObject var artwork: ArtworkLibrary
+    @State private var query = ""
+    @State private var candidates: [TMDBClient.Candidate] = []
+    @State private var searching = false
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choisir l'œuvre sur TMDB").font(.system(size: 15, weight: .bold))
+            HStack(spacing: 8) {
+                TextField("Titre à chercher", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { search() }
+                Button("Chercher") { search() }.disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || searching)
+                if searching { ProgressView().controlSize(.small) }
+            }
+            if let message {
+                Text(message).font(.system(size: 12.5)).foregroundStyle(Theme.dim)
+            }
+            VStack(spacing: 4) {
+                ForEach(candidates) { candidate in
+                    CandidateRow(candidate: candidate) {
+                        artwork.choose(candidate, for: key)
+                        onDone()
+                    }
+                }
+            }
+            HStack {
+                Button("Aucune affiche pour cette œuvre") {
+                    artwork.chooseNone(for: key)
+                    onDone()
+                }
+                .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
+                Spacer()
+                Text("Votre choix est conservé : la recherche automatique n'y touchera plus.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.faint)
+            }
+        }
+        .padding(16)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .onAppear {
+            query = title
+            search()
+        }
+    }
+
+    private func search() {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !searching else { return }
+        searching = true
+        message = nil
+        Task {
+            do {
+                candidates = try await TMDBClient.candidates(query: text, isSeries: isSeries)
+                if candidates.isEmpty { message = "Aucun résultat. Essayez le titre original, ou un titre plus court." }
+            } catch {
+                candidates = []
+                message = error.localizedDescription
+            }
+            searching = false
+        }
+    }
+}
+
+struct CandidateRow: View {
+    let candidate: TMDBClient.Candidate
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Color.clear
+                    .frame(width: 40, height: 60)
+                    .overlay {
+                        if let url = candidate.posterURL { RemoteImage(urls: [url]) }
+                        else { Theme.surface2.overlay(Image(systemName: "film").foregroundStyle(Theme.faint)) }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(candidate.name).font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
+                    Text([candidate.year.map(String.init), candidate.originalName].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(1)
+                }
+                Spacer()
+                Text("Choisir").font(.system(size: 12, weight: .bold)).opacity(hover ? 1 : 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color.white.opacity(hover ? 0.1 : 0.03), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }
