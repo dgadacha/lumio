@@ -662,6 +662,7 @@ final class AppState: ObservableObject {
             }
             let resume = history.entry(for: video.id)?.position ?? 0
             detail = nil
+            if playerMinimized, playing != nil { pendingMini = true }
             playing = PlayableMedia(stream: loaded, url: url, startPosition: resume)
         } catch {
             streamError = error.localizedDescription
@@ -704,6 +705,7 @@ final class AppState: ObservableObject {
             detail = nil
             localSeries = nil
             localMovie = nil
+            if playerMinimized, playing != nil { pendingMini = true }
             playing = PlayableMedia(localPath: path, title: title, detailLine: detailLine, prepared: prepared,
                                     startPosition: resume, nextPath: local.episode(after: path)?.episode.path)
         } catch {
@@ -917,6 +919,7 @@ final class AppState: ObservableObject {
     func play(_ item: LibraryItem) {
         if item.playable {
             detail = nil
+            if playerMinimized, playing != nil { pendingMini = true }
             playing = PlayableMedia(item: item)
         } else {
             NSWorkspace.shared.open(item.mediaURL)

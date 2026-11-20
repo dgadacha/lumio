@@ -133,13 +133,12 @@ final class PlayerModel: ObservableObject {
     @Published var notice: String?
     /// Secondes restantes avant l'enchaînement automatique sur l'épisode suivant ; nul hors compte à rebours.
     @Published var nextCountdown: Int?
-    /// Vrai quand la vidéo est détachée dans la petite fenêtre flottante (image dans l'image).
+    /// Vrai quand la vidéo joue dans la petite fenêtre flottante de Lumio.
     @Published var isMini = false
-    /// Vrai si macOS permet le lecteur réduit pour ce contenu (pas pour l'audio seul).
+    /// Vrai si le lecteur réduit a un sens pour ce contenu (pas pour l'audio seul).
     @Published var miniAvailable = false
     var onMiniChange: (Bool) -> Void = { _ in }
-    private var pipController: AVPictureInPictureController?
-    private var pipDelegate: PiPDelegate?
+    private var miniPanel: MiniPanelController?
     /// Panneau ouvert au-dessus des commandes (pistes, épisodes, vitesse, qualité).
     @Published var panel: PlayerPanel?
     var onNext: () -> Void = {}
@@ -174,6 +173,7 @@ final class PlayerModel: ObservableObject {
         player.appliesMediaSelectionCriteriaAutomatically = false
         player.replaceCurrentItem(with: playerItem)
         // Le générateur d'images ne sait lire qu'un fichier : pas d'aperçu pour un flux en streaming.
+        miniAvailable = media.kind == .video
         if !media.isStream, media.kind == .video {
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -234,9 +234,14 @@ final class PlayerModel: ObservableObject {
         isPlaying = true
         pokeControls()
         DebugDriver.playerToggleMini = { [weak self] in self?.toggleMini() }
+        DebugDriver.playerSelectSubtitle = { [weak self] index in
+            // Sans mémoriser le choix : la préférence de l'utilisateur n'est pas touchée par un test.
+            guard let self, self.media.subtitles.indices.contains(index) else { return }
+            self.select(subtitle: self.media.subtitles[index], remember: false)
+        }
         DebugDriver.playerMiniReport = { [weak self] in
             guard let self else { return "lecteur fermé" }
-            return "fenêtres visibles=\(NSApp.windows.filter(\.isVisible).count) disponible=\(self.miniAvailable) réduit=\(self.isMini) actif=\(self.pipController?.isPictureInPictureActive ?? false) possible=\(self.pipController?.isPictureInPicturePossible ?? false) lecture=\(self.player.rate != 0) temps=\(Int(self.time))s"
+            return "fenêtres visibles=\(NSApp.windows.filter(\.isVisible).count) disponible=\(self.miniAvailable) réduit=\(self.isMini) lecture=\(self.player.rate != 0) temps=\(Int(self.time))s sous-titre=\(self.caption.count)c"
         }
         DebugDriver.playerSetPanel = { [weak self] name in
             let panels: [String: PlayerPanel] = ["tracks": .tracks, "episodes": .episodes, "speed": .speed, "quality": .quality]
@@ -415,32 +420,6 @@ final class PlayerModel: ObservableObject {
 
     // MARK: Lecteur réduit
 
-    /// Reçoit le calque vidéo et prépare la fenêtre flottante de macOS.
-    func attach(layer: AVPlayerLayer) {
-        // Reporté au tour de boucle suivant : on ne publie pas d'état pendant la construction de la vue.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.pipController == nil, AVPictureInPictureController.isPictureInPictureSupported(),
-                  let controller = AVPictureInPictureController(playerLayer: layer) else { return }
-            let delegate = PiPDelegate(
-                onStart: { [weak self] in self?.setMini(true) },
-                onStop: { [weak self] in self?.setMini(false) })
-            controller.delegate = delegate
-            self.pipController = controller
-            self.pipDelegate = delegate
-            self.miniAvailable = true
-        }
-    }
-
-    /// Passe en mode réduit dès que la vidéo est prête ; sert à garder le mode réduit d'un épisode au suivant.
-    func startMiniWhenReady(attempt: Int = 0) {
-        guard !isMini, attempt < 20 else { return }
-        if let pipController, pipController.isPictureInPicturePossible {
-            pipController.startPictureInPicture()
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.startMiniWhenReady(attempt: attempt + 1) }
-        }
-    }
-
     private func setMini(_ value: Bool) {
         guard isMini != value else { return }
         isMini = value
@@ -449,20 +428,23 @@ final class PlayerModel: ObservableObject {
         if !value { pokeControls() }
     }
 
+    /// Ouvre ou referme la petite fenêtre flottante. C'est une fenêtre de Lumio, pas celle de macOS :
+    /// sa barre de progression, ses boutons et ses sous-titres sont les nôtres.
     func toggleMini() {
-        guard let pipController else { return }
-        if pipController.isPictureInPictureActive {
-            pipController.stopPictureInPicture()
-        } else {
-            // Le plein écran et la fenêtre flottante ne font pas bon ménage : on en sort d'abord,
-            // et on attend la fin de l'animation de sortie avant de détacher la vidéo.
-            if NSApp.keyWindow?.styleMask.contains(.fullScreen) == true {
-                toggleFullScreen()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.startMiniWhenReady() }
-            } else {
-                pipController.startPictureInPicture()
-            }
-        }
+        if isMini { closeMini() } else { openMini() }
+    }
+
+    func openMini() {
+        guard miniAvailable, miniPanel == nil else { return }
+        if NSApp.keyWindow?.styleMask.contains(.fullScreen) == true { toggleFullScreen() }
+        miniPanel = MiniPanelController(model: self)
+        setMini(true)
+    }
+
+    func closeMini() {
+        miniPanel?.close()
+        miniPanel = nil
+        setMini(false)
     }
 
     /// Survol de la barre : affiche l'heure pointée et, pour un fichier, l'image correspondante.
@@ -543,13 +525,8 @@ final class PlayerModel: ObservableObject {
         subtitleTask?.cancel()
         countdownTask?.cancel()
         previewTask?.cancel()
-        // La fenêtre flottante se ferme de façon asynchrone : le contrôleur doit lui survivre,
-        // sinon elle reste à l'écran sans plus personne pour la fermer.
-        if let controller = pipController, controller.isPictureInPictureActive {
-            PiPCloser.close(controller)
-        }
-        pipController = nil
-        pipDelegate = nil
+        miniPanel?.close()
+        miniPanel = nil
         previewGenerator?.cancelAllCGImageGeneration()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
@@ -603,11 +580,7 @@ final class PlayerLayerView: NSView {
 struct PlayerSurface: NSViewRepresentable {
     let model: PlayerModel
 
-    func makeNSView(context: Context) -> PlayerLayerView {
-        let view = PlayerLayerView(player: model.player)
-        model.attach(layer: view.playerLayer)
-        return view
-    }
+    func makeNSView(context: Context) -> PlayerLayerView { PlayerLayerView(player: model.player) }
 
     func updateNSView(_ view: PlayerLayerView, context: Context) {}
 }
@@ -715,16 +688,18 @@ struct PlayerView: View {
             // Le lecteur précédent était en mode réduit : celui-ci y repasse dès que sa vidéo est prête.
             if state.pendingMini {
                 state.pendingMini = false
-                model.startMiniWhenReady()
+                model.openMini()
             }
+            // L'état affiché suit ce lecteur-ci, quel que soit l'ordre dans lequel l'ancien disparaît.
+            state.playerMinimized = model.isMini
             model.onNext = {
                 guard let next = media.nextLocalPath else { return }
-                if model.isMini { state.pendingMini = true }
                 Task { await state.playLocal(path: next) }
             }
         }
         .onDisappear {
-            state.playerMinimized = false
+            // Si un autre lecteur a déjà pris la suite, c'est lui qui décide de l'état réduit.
+            if state.playing == nil { state.playerMinimized = false }
             savePosition()
             _ = model.shutdown()
         }
@@ -1165,64 +1140,152 @@ struct EpisodePanelRow: View {
     }
 }
 
-/// Ferme la fenêtre flottante d'un lecteur qui disparaît (autre vidéo lancée, épisode suivant).
-///
-/// À ce moment la surface vidéo a déjà quitté l'écran : macOS ne sait plus où ranger la vidéo et peut
-/// laisser sa fenêtre affichée, orpheline. On demande donc l'arrêt normalement, puis on ferme nous-mêmes
-/// la fenêtre si elle est toujours là. Seules les fenêtres flottantes présentes au moment de l'appel
-/// sont concernées : celle que le lecteur suivant ouvrira n'est pas touchée.
+/// Petite fenêtre flottante du lecteur réduit. Elle reste au-dessus des autres fenêtres, se déplace
+/// par son bord supérieur, garde le format 16:9 et retient sa place d'une vidéo à la suivante.
 @MainActor
-enum PiPCloser {
-    private static var closing: [ObjectIdentifier: AVPictureInPictureController] = [:]
+final class MiniPanelController: NSObject, NSWindowDelegate {
+    /// Dernier emplacement utilisé, pour rouvrir au même endroit (épisode suivant, nouvelle vidéo).
+    private static var lastFrame: NSRect?
+    private let panel: NSPanel
 
-    private static var floatingPanels: [NSWindow] {
-        NSApp.windows.filter { $0.isVisible && String(describing: type(of: $0)).contains("PIPPanel") }
-    }
-
-    static func close(_ controller: AVPictureInPictureController) {
-        let key = ObjectIdentifier(controller)
-        let panels = floatingPanels
-        controller.delegate = nil
-        closing[key] = controller
-        controller.stopPictureInPicture()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            for panel in panels where panel.isVisible { panel.close() }
-            closing[key] = nil
+    init(model: PlayerModel) {
+        let size = NSSize(width: 420, height: 236)
+        let screen = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let frame = Self.lastFrame ?? NSRect(x: screen.maxX - size.width - 24, y: screen.minY + 24, width: size.width, height: size.height)
+        panel = NSPanel(contentRect: frame, styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        super.init()
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(button)?.isHidden = true
         }
+        panel.level = .floating
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentAspectRatio = NSSize(width: 16, height: 9)
+        panel.minSize = NSSize(width: 260, height: 146)
+        panel.backgroundColor = .black
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
+        // La petite fenêtre est rarement la fenêtre active : sans cela, le premier clic ne ferait que
+        // lui donner le focus, et la barre de progression ne réagirait qu'au second.
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.contentView = FirstClickHostingView(rootView: MiniPlayerView(model: model).preferredColorScheme(.dark))
+        panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
     }
+
+    var window: NSWindow { panel }
+
+    func close() {
+        Self.lastFrame = panel.frame
+        panel.delegate = nil
+        panel.orderOut(nil)
+        panel.close()
+    }
+
+    func windowDidMove(_ notification: Notification) { Self.lastFrame = panel.frame }
+    func windowDidResize(_ notification: Notification) { Self.lastFrame = panel.frame }
 }
 
-/// Relaie à l'app le début et la fin du mode réduit, que l'utilisateur y mette fin par le bouton
-/// de retour de la fenêtre flottante ou en la fermant.
-final class PiPDelegate: NSObject, AVPictureInPictureControllerDelegate {
-    private let onStart: @MainActor () -> Void
-    private let onStop: @MainActor () -> Void
+/// Vue d'accueil qui traite le clic dès le premier, même quand sa fenêtre n'est pas active.
+final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
 
-    init(onStart: @escaping @MainActor () -> Void, onStop: @escaping @MainActor () -> Void) {
-        self.onStart = onStart
-        self.onStop = onStop
-    }
+/// Surface vidéo de la petite fenêtre : un second calque branché sur le même lecteur.
+struct MiniSurface: NSViewRepresentable {
+    let player: AVPlayer
+    func makeNSView(context: Context) -> PlayerLayerView { PlayerLayerView(player: player) }
+    func updateNSView(_ view: PlayerLayerView, context: Context) {}
+}
 
-    func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
-        Task { @MainActor in onStart() }
-    }
+/// Contenu du lecteur réduit : la vidéo, les sous-titres, et au survol des commandes minimales
+/// avec une barre de progression cliquable.
+struct MiniPlayerView: View {
+    @ObservedObject var model: PlayerModel
+    @State private var hover = false
 
-    func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
-        Task { @MainActor in onStop() }
-    }
+    private var showControls: Bool { hover || !model.isPlaying || DebugDriver.forceMiniControls }
 
-    func pictureInPictureController(_ controller: AVPictureInPictureController,
-                                    failedToStartPictureInPictureWithError error: Error) {
-        Task { @MainActor in onStop() }
-    }
+    var body: some View {
+        ZStack {
+            Color.black
+            MiniSurface(player: model.player)
 
-    func pictureInPictureController(_ controller: AVPictureInPictureController,
-                                    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
-        // Le lecteur est resté vivant sous l'interface : il suffit de le réafficher.
-        Task { @MainActor in
-            onStop()
-            completionHandler(true)
+            if model.isBuffering, model.failed == nil {
+                ProgressView().controlSize(.regular).allowsHitTesting(false)
+            }
+
+            if !model.caption.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(model.caption)
+                        .font(.system(size: 13, weight: .medium))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 4))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, showControls ? 44 : 10)
+                }
+                .allowsHitTesting(false)
+            }
+
+            controls
+                .opacity(showControls ? 1 : 0)
+                .animation(.easeOut(duration: 0.18), value: showControls)
         }
+        .onHover { hover = $0 }
+        .ignoresSafeArea()
+    }
+
+    private var controls: some View {
+        VStack(spacing: 0) {
+            HStack {
+                button("arrow.up.left.and.arrow.down.right", size: 13, help: "Revenir au lecteur") { model.closeMini() }
+                Spacer()
+                button("xmark", size: 13, help: "Fermer la vidéo") { model.onClose() }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 18)
+            .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
+
+            Spacer(minLength: 0)
+            HStack(spacing: 18) {
+                button("gobackward.10", size: 19, help: "Reculer de 10 secondes") { model.seek(by: -10) }
+                button(model.isPlaying ? "pause.fill" : "play.fill", size: 26, help: "Lecture ou pause") { model.togglePlay() }
+                button("goforward.10", size: 19, help: "Avancer de 10 secondes") { model.seek(by: 10) }
+            }
+            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Text(Fmt.duration(model.time).isEmpty ? "0:00" : Fmt.duration(model.time))
+                Scrubber(value: model.time, total: model.duration, thumb: 9) { model.seek(to: $0) }
+                Text(Fmt.duration(model.duration))
+            }
+            .font(.system(size: 10.5).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.9))
+            .padding(.horizontal, 12)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+        }
+    }
+
+    private func button(_ symbol: String, size: CGFloat, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .regular))
+                .foregroundStyle(.white)
+                .frame(width: size + 16, height: size + 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 

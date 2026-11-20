@@ -84,9 +84,11 @@ connexion et dans la résolution choisie, 4K comprise.
 ### Lecteur réduit
 
 Le bouton à gauche du plein écran détache la vidéo dans une petite fenêtre flottante, qui reste
-au-dessus des autres (image dans l'image de macOS). La fenêtre principale redevient alors utilisable
-pour parcourir l'app. Le bouton de retour de la fenêtre flottante, ou sa fermeture, ramène la vidéo
-dans le lecteur. Les sous-titres dessinés par Lumio ne s'affichent pas dans la fenêtre flottante.
+au-dessus des autres. La fenêtre principale redevient alors utilisable pour parcourir l'app. Au survol,
+la petite fenêtre affiche une barre de progression cliquable, lecture et pause, les sauts de dix
+secondes, le retour au lecteur et la fermeture ; les sous-titres y restent affichés. Elle se déplace,
+se redimensionne en gardant son format, et retient sa place. L'épisode suivant, ou une autre vidéo
+lancée depuis l'app, continue dans cette même petite fenêtre.
 
 ### Aperçu au survol et espace disque
 

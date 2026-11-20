@@ -15,6 +15,9 @@ enum DebugDriver {
     static var playerSeekNearEnd: () -> Void = {}
     static var playerSeekTo: (Double) -> Void = { _ in }
     static var playerToggleMini: () -> Void = {}
+    static var playerSelectSubtitle: (Int) -> Void = { _ in }
+    /// Affiche les commandes de la petite fenêtre sans survol, le temps d'une capture.
+    static var forceMiniControls = false
     static var playerMiniReport: () -> String = { "aucun lecteur" }
     /// Simule le survol de la barre de progression à une position (0 à 1) ; une valeur négative l'arrête.
     static var playerHover: (Double?) -> Void = { _ in }
@@ -216,6 +219,44 @@ enum DebugDriver {
                 case "hover":
                     let value = Double(argument) ?? -1
                     playerHover(value < 0 ? nil : value)
+                case "subtitle":
+                    playerSelectSubtitle(Int(argument) ?? 0)
+                case "minimouse":
+                    // minimouse <x1> <x2> <y depuis le bas> : clic (x1 = x2) ou glisser dans la petite fenêtre,
+                    // en points, sans activer l'app. Rapporte le temps de lecture et le cadre de la fenêtre.
+                    let values = argument.split(separator: " ").compactMap { Double($0) }
+                    guard values.count == 3, let panel = NSApp.windows.first(where: { $0.isVisible && $0 is NSPanel && $0.level == .floating }) else {
+                        log("minimouse: arguments ou petite fenêtre manquants"); continue
+                    }
+                    forceMiniControls = true
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    let before = panel.frame
+                    func event(_ type: NSEvent.EventType, _ x: Double) -> NSEvent? {
+                        NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: values[2]), modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+                                           context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
+                    }
+                    var sequence: [NSEvent?] = [event(.leftMouseDown, values[0])]
+                    if values[0] != values[1] {
+                        for step in 1...6 { sequence.append(event(.leftMouseDragged, values[0] + (values[1] - values[0]) * Double(step) / 6)) }
+                    }
+                    sequence.append(event(.leftMouseUp, values[1]))
+                    for item in sequence.compactMap({ $0 }) {
+                        NSApp.postEvent(item, atStart: false)
+                        try? await Task.sleep(nanoseconds: 40_000_000)
+                    }
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    forceMiniControls = false
+                    let moved = panel.frame != before
+                    log("minimouse \(argument): \(playerMiniReport()) | fenêtre déplacée=\(moved) cadre=\(Int(panel.frame.minX)),\(Int(panel.frame.minY)) \(Int(panel.frame.width))x\(Int(panel.frame.height)) app active=\(NSApp.isActive)")
+                case "snapmini":
+                    // Capture de la petite fenêtre du lecteur réduit (commandes affichées de force).
+                    forceMiniControls = true
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    if let panel = NSApp.windows.first(where: { $0.isVisible && $0 is NSPanel && $0.level == .floating }) {
+                        log("snapmini: \(snapshot(window: panel, to: argument)) fenêtre \(Int(panel.frame.width))x\(Int(panel.frame.height))")
+                    } else { log("snapmini: aucune petite fenêtre") }
+                    forceMiniControls = false
                 case "mini":
                     // Bascule le lecteur réduit, puis rapporte son état.
                     if argument != "état" { playerToggleMini() }
@@ -337,7 +378,11 @@ enum DebugDriver {
     }
 
     private static func snapshot(to path: String) -> String {
-        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else { return "pas de fenêtre" }
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && !($0 is NSPanel) }) else { return "pas de fenêtre" }
+        return snapshot(window: window, to: path)
+    }
+
+    private static func snapshot(window: NSWindow, to path: String) -> String {
         // Capture de notre propre fenêtre par le serveur de fenêtres (inclut les calques et la vidéo).
         // L'API est masquée dans le SDK récent mais toujours présente : on la résout à l'exécution.
         typealias CaptureFn = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
