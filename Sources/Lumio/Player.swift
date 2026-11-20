@@ -577,12 +577,28 @@ final class PlayerLayerView: NSView {
     }
 }
 
+/// Surface vidéo du grand lecteur. `AVPlayerView` (sans ses commandes) plutôt qu'un calque nu : c'est lui
+/// qui cale l'affichage des images sur l'écran, et la lecture y est nettement plus fluide.
+/// Débranchée pendant le mode réduit, pour que le lecteur n'alimente qu'une sortie à la fois.
 struct PlayerSurface: NSViewRepresentable {
     let model: PlayerModel
+    let attached: Bool
 
-    func makeNSView(context: Context) -> PlayerLayerView { PlayerLayerView(player: model.player) }
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.videoGravity = .resizeAspect
+        view.allowsPictureInPicturePlayback = false
+        view.player = attached ? model.player : nil
+        return view
+    }
 
-    func updateNSView(_ view: PlayerLayerView, context: Context) {}
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        let wanted = attached ? model.player : nil
+        if view.player !== wanted { view.player = wanted }
+    }
+
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) { view.player = nil }
 }
 
 // MARK: - Vue
@@ -610,7 +626,7 @@ struct PlayerView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .shadow(radius: 30)
             } else {
-                PlayerSurface(model: model)
+                PlayerSurface(model: model, attached: !model.isMini)
             }
 
             // Zone de clic : lecture / pause, double clic : plein écran.
@@ -1184,7 +1200,15 @@ final class MiniPanelController: NSObject, NSWindowDelegate {
         Self.lastFrame = panel.frame
         panel.delegate = nil
         panel.orderOut(nil)
+        // Libère tout de suite la vue : son calque vidéo se débranche du lecteur.
+        if let content = panel.contentView { Self.detach(content) }
+        panel.contentView = nil
         panel.close()
+    }
+
+    private static func detach(_ view: NSView) {
+        (view as? PlayerLayerView)?.playerLayer.player = nil
+        view.subviews.forEach(detach)
     }
 
     func windowDidMove(_ notification: Notification) { Self.lastFrame = panel.frame }
@@ -1201,6 +1225,7 @@ struct MiniSurface: NSViewRepresentable {
     let player: AVPlayer
     func makeNSView(context: Context) -> PlayerLayerView { PlayerLayerView(player: player) }
     func updateNSView(_ view: PlayerLayerView, context: Context) {}
+    static func dismantleNSView(_ view: PlayerLayerView, coordinator: ()) { view.playerLayer.player = nil }
 }
 
 /// Contenu du lecteur réduit : la vidéo, les sous-titres, et au survol des commandes minimales
